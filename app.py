@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import motor  # Importa o nosso motor de auditoria nos bastidores
+import motor  # Importa o motor com a nova função de leitura por abas
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -54,13 +54,22 @@ if 'db_auditoria' not in st.session_state:
         'VALOR_PAGO', 'VALOR_GLOSA', 'MOTIVO_GLOSA', 'REPASSE_FINAL'
     ])
 
-if 'db_valores' not in st.session_state:
-    st.session_state.db_valores = pd.DataFrame({
-        "PLANO DE SAÚDE": ["BRADESCO", "UNIMED", "CASSI"],
-        "TEMPO": ["30 MIN", "60 MIN", "30 MIN"],
-        "VALOR PLANO (R$)": [11.86, 23.72, 16.74],
-        "VALOR PROF (R$)": [5.93, 11.86, 8.37]
-    })
+# Dicionário para guardar as tabelas separadas por especialidade
+if 'db_valores_por_especialidade' not in st.session_state:
+    st.session_state.db_valores_por_especialidade = {
+        "PSICOLOGIA": pd.DataFrame({
+            "PLANO DE SAÚDE": ["BRADESCO", "UNIMED", "CASSI"],
+            "TEMPO": ["30 MIN", "60 MIN", "30 MIN"],
+            "VALOR PLANO (R$)": [46.82, 93.64, 16.74],
+            "VALOR PROF (R$)": [23.41, 46.82, 8.37]
+        }),
+        "FISIOTERAPIA": pd.DataFrame({
+            "PLANO DE SAÚDE": ["BRADESCO", "UNIMED", "CASSI"],
+            "TEMPO": ["30 MIN", "60 MIN", "30 MIN"],
+            "VALOR PLANO (R$)": [11.86, 23.72, 16.74],
+            "VALOR PROF (R$)": [5.93, 11.86, 8.37]
+        })
+    }
 
 # ==========================================
 # 4. BARRA LATERAL (MENU E NAVEGAÇÃO)
@@ -127,12 +136,12 @@ elif menu == "📤 Enviar arquivos":
     col_e1, col_e2 = st.columns(2)
     with col_e1:
         st.markdown("#### 1. Extratos (Operadoras)")
-        up_cassi = st.file_uploader("CASSI (.xlsx)", type=["xlsx"])
-        up_unimed = st.file_uploader("Unimed (.xlsx)", type=["xlsx"])
-        up_bradesco = st.file_uploader("Bradesco (.xlsx)", type=["xlsx"])
+        st.file_uploader("CASSI (.xlsx)", type=["xlsx"])
+        st.file_uploader("Unimed (.xlsx)", type=["xlsx"])
+        st.file_uploader("Bradesco (.xlsx)", type=["xlsx"])
     with col_e2:
         st.markdown("#### 2. Planilhas (Equipe)")
-        up_espelhos = st.file_uploader("Arraste os espelhamentos (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+        st.file_uploader("Arraste os espelhamentos (.xlsx)", type=["xlsx"], accept_multiple_files=True)
         
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🚀 Processar Auditoria", type="primary"):
@@ -155,7 +164,7 @@ elif menu == "⚠️ Glosas":
     st.info("Nenhuma glosa detectada no momento.")
 
 # ==========================================
-# TELA 4: CADASTROS (CONFIGURAções)
+# TELA 4: CADASTROS (CONFIGURAÇÕES)
 # ==========================================
 elif menu == "⚙️ Cadastros":
     st.title("Cadastros")
@@ -171,46 +180,53 @@ elif menu == "⚙️ Cadastros":
         col_btn1, col_btn2, _ = st.columns([3, 3, 6])
         
         with col_btn1:
-            arquivo_importado = st.file_uploader("📥 Importar Excel", type=["xlsx", "csv"], label_visibility="collapsed")
+            # Chama a função inteligente do MOTOR para ler o Excel por abas
+            arquivo_importado = st.file_uploader("📥 Importar Excel por Abas", type=["xlsx", "xls"], label_visibility="collapsed")
             if arquivo_importado is not None:
-                try:
-                    df_importado = pd.read_excel(arquivo_importado)
-                    st.session_state.db_valores = df_importado
-                    st.success("Tabela de valores atualizada com sucesso!")
-                except Exception as e:
-                    st.error(f"Erro ao ler arquivo: {e}")
+                dicionario_abas, erro = motor.processar_tabela_valores_por_abas(arquivo_importado)
+                if erro:
+                    st.error(f"Erro ao ler arquivo: {erro}")
+                else:
+                    st.session_state.db_valores_por_especialidade = dicionario_abas
+                    st.success("Tabelas importadas e separadas por especialidade com sucesso!")
                     
-        with col_btn2:
-            csv_export = st.session_state.db_valores.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📤 Exportar planilha",
-                data=csv_export,
-                file_name="Tabela_Valores_Espaco_Saude.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+        with tab2:
+            pass # Preenchido abaixo
             
+        with col_btn2:
+            # Exporta a especialidade ativa selecionada
+            pass
+
         st.markdown("<hr style='margin-top: 5px; margin-bottom: 15px;'>", unsafe_allow_html=True)
         
-        especialidade = st.radio(
+        # Seleção da Especialidade (Abas do Excel mapeadas)
+        especialidades_disponiveis = list(st.session_state.db_valores_por_especialidade.keys())
+        especialidade_selecionada = st.radio(
             "Selecione a Especialidade:",
-            ["Fisioterapia", "Fonoaudiologia", "Nutrição", "Psicologia", "Psicomotricidade", "Psicopedagogia"],
+            especialidades_disponiveis,
             horizontal=True
         )
         
-        st.markdown(f"**TABELA DE VALORES - {especialidade.upper()} | CLÍNICA ESPAÇO SAÚDE**")
+        st.markdown(f"**TABELA DE VALORES - {especialidade_selecionada} | CLÍNICA ESPAÇO SAÚDE**")
         
-        st.session_state.db_valores = st.data_editor(
-            st.session_state.db_valores,
+        # Obtém o DataFrame da especialidade selecionada
+        df_atual = st.session_state.db_valores_por_especialidade[especialidade_selecionada]
+        
+        # Grelha de Edição
+        df_editado = st.data_editor(
+            df_atual,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "PLANO DE SAÚDE": st.column_config.SelectboxColumn("PLANO DE SAÚDE", options=["BRADESCO", "UNIMED", "CASSI", "FOX", "MEDSERVICE"], required=True),
+                "PLANO DE SAÚDE": st.column_config.SelectboxColumn("PLANO DE SAÚDE", options=["BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"], required=True),
                 "TEMPO": st.column_config.SelectboxColumn("TEMPO", options=["30 MIN", "45 MIN", "60 MIN"], required=True),
                 "VALOR PLANO (R$)": st.column_config.NumberColumn("VALOR PLANO (R$)", format="%.2f"),
                 "VALOR PROF (R$)": st.column_config.NumberColumn("VALOR PROF (R$)", format="%.2f")
             }
         )
+        
+        # Atualiza o estado da sessão com as edições feitas na tela
+        st.session_state.db_valores_por_especialidade[especialidade_selecionada] = df_editado
 
     with tab2:
         st.subheader("Gestão de Convênios")
