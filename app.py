@@ -60,9 +60,9 @@ if 'db_auditoria' not in st.session_state:
         'VALOR_PAGO', 'VALOR_GLOSA', 'MOTIVO_GLOSA', 'REPASSE_FINAL'
     ])
 
-# Cadastros de Valores (Mock para visualização inicial)
-if 'db_valores_fisio' not in st.session_state:
-    st.session_state.db_valores_fisio = pd.DataFrame({
+# Cadastros de Valores
+if 'db_valores' not in st.session_state:
+    st.session_state.db_valores = pd.DataFrame({
         "PLANO DE SAÚDE": ["BRADESCO", "UNIMED", "CASSI"],
         "TEMPO": ["30 MIN", "60 MIN", "30 MIN"],
         "VALOR PLANO (R$)": [11.86, 23.72, 16.74],
@@ -166,7 +166,6 @@ elif menu == "⚙️ Cadastros":
     st.title("Cadastros")
     st.markdown('<div class="admin-warning">Somente administradores alteram cadastros, valores e regras. As suas mudanças aqui refletem-se em toda a auditoria.</div>', unsafe_allow_html=True)
 
-    # Criação das Abas
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "Tabela de valores", "Planos", "Profissionais", "Feriados", "Códigos de glosa", "Regras do repasse"
     ])
@@ -176,15 +175,32 @@ elif menu == "⚙️ Cadastros":
         st.markdown("Tabela no mesmo formato da planilha da clínica. O repasse usa o **valor do profissional** desta tabela.")
         
         # Botões de Importar/Exportar
-        col_btn1, col_btn2, _ = st.columns([2, 2, 8])
+        col_btn1, col_btn2, _ = st.columns([3, 3, 6])
+        
         with col_btn1:
-            st.button("📥 Importar planilha")
+            # Mecânica real de importação
+            arquivo_importado = st.file_uploader("📥 Importar Excel", type=["xlsx", "csv"], label_visibility="collapsed")
+            if arquivo_importado is not None:
+                try:
+                    df_importado = pd.read_excel(arquivo_importado)
+                    st.session_state.db_valores = df_importado
+                    st.success("Tabela atualizada com sucesso!")
+                except Exception as e:
+                    st.error(f"Erro ao ler arquivo: {e}")
+                    
         with col_btn2:
-            st.button("📤 Exportar planilha")
+            # Mecânica real de exportação
+            csv_export = st.session_state.db_valores.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📤 Exportar planilha",
+                data=csv_export,
+                file_name="Tabela_Valores_Espaco_Saude.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
             
         st.markdown("<hr style='margin-top: 5px; margin-bottom: 15px;'>", unsafe_allow_html=True)
         
-        # Pílulas/Seleção de Especialidade
         especialidade = st.radio(
             "Selecione a Especialidade:",
             ["Fisioterapia", "Fonoaudiologia", "Nutrição", "Psicologia", "Psicomotricidade", "Psicopedagogia"],
@@ -193,10 +209,9 @@ elif menu == "⚙️ Cadastros":
         
         st.markdown(f"**TABELA DE VALORES - {especialidade.upper()} | CLÍNICA ESPAÇO SAÚDE**")
         
-        # Editor Interativo de Dados (Data Grid)
-        # O st.data_editor permite adicionar, remover e editar linhas como no Excel
-        novo_df = st.data_editor(
-            st.session_state.db_valores_fisio,
+        # Grelha de Edição
+        st.session_state.db_valores = st.data_editor(
+            st.session_state.db_valores,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
@@ -207,12 +222,11 @@ elif menu == "⚙️ Cadastros":
             }
         )
 
-    # ABA 2: PLANOS
+    # ABA 2 A 6: PLACEHOLDERS PARA DESENVOLVIMENTO FUTURO
     with tab2:
         st.subheader("Gestão de Convênios")
         st.info("Aqui você poderá adicionar novos planos de saúde ou remover operadoras desativadas.")
 
-    # ABA 3: PROFISSIONAIS
     with tab3:
         st.subheader("Equipe Clínica")
         st.info("Aqui você associará o nome do profissional à sua respectiva especialidade e conselho.")
