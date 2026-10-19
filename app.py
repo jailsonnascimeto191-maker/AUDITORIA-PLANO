@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import motor  # Importa o motor com a nova função de leitura por abas
+import motor  # Importa o motor nos bastidores
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -54,21 +54,20 @@ if 'db_auditoria' not in st.session_state:
         'VALOR_PAGO', 'VALOR_GLOSA', 'MOTIVO_GLOSA', 'REPASSE_FINAL'
     ])
 
-# Dicionário para guardar as tabelas separadas por especialidade
+# Especialidades fixas da clínica com dados iniciais de exemplo
+especialidades_fixas = [
+    "PSICOLOGIA", "FISIOTERAPIA", "FONOAUDIOLOGIA", 
+    "NUTRIÇÃO", "PSICOMOTRICIDADE", "PSICOPEDAGOGIA"
+]
+
 if 'db_valores_por_especialidade' not in st.session_state:
     st.session_state.db_valores_por_especialidade = {
-        "PSICOLOGIA": pd.DataFrame({
+        esp: pd.DataFrame({
             "PLANO DE SAÚDE": ["BRADESCO", "UNIMED", "CASSI"],
             "TEMPO": ["30 MIN", "60 MIN", "30 MIN"],
             "VALOR PLANO (R$)": [46.82, 93.64, 16.74],
             "VALOR PROF (R$)": [23.41, 46.82, 8.37]
-        }),
-        "FISIOTERAPIA": pd.DataFrame({
-            "PLANO DE SAÚDE": ["BRADESCO", "UNIMED", "CASSI"],
-            "TEMPO": ["30 MIN", "60 MIN", "30 MIN"],
-            "VALOR PLANO (R$)": [11.86, 23.72, 16.74],
-            "VALOR PROF (R$)": [5.93, 11.86, 8.37]
-        })
+        }) for esp in especialidades_fixas
     }
 
 # ==========================================
@@ -105,9 +104,9 @@ if menu == "📊 Painel":
     profissionais_disponiveis = ['Todos'] + df_db['PROFISSIONAL'].unique().tolist() if not df_db.empty else ['Todos']
     
     with f_col1:
-        mes_selecionado = st.selectbox("Competência", meses_disponiveis)
+        st.selectbox("Competência", meses_disponiveis)
     with f_col2:
-        prof_selecionado = st.selectbox("Profissional", profissionais_disponiveis)
+        st.selectbox("Profissional", profissionais_disponiveis)
     with f_col3:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("☁️ Salvar na Nuvem", use_container_width=True):
@@ -180,39 +179,38 @@ elif menu == "⚙️ Cadastros":
         col_btn1, col_btn2, _ = st.columns([3, 3, 6])
         
         with col_btn1:
-            # Chama a função inteligente do MOTOR para ler o Excel por abas
-            arquivo_importado = st.file_uploader("📥 Importar Excel por Abas", type=["xlsx", "xls"], label_visibility="collapsed")
+            # Upload rápido para atualizar os valores em massa via Motor
+            arquivo_importado = st.file_uploader("📥 Atualizar Valores por Excel (.xlsx)", type=["xlsx", "xls"], label_visibility="collapsed")
             if arquivo_importado is not None:
                 dicionario_abas, erro = motor.processar_tabela_valores_por_abas(arquivo_importado)
                 if erro:
                     st.error(f"Erro ao ler arquivo: {erro}")
                 else:
-                    st.session_state.db_valores_por_especialidade = dicionario_abas
-                    st.success("Tabelas importadas e separadas por especialidade com sucesso!")
+                    for esp, df_novo in dicionario_abas.items():
+                        st.session_state.db_valores_por_especialidade[esp] = df_novo
+                    st.success("Valores atualizados com sucesso a partir do Excel!")
                     
-        with tab2:
-            pass # Preenchido abaixo
-            
         with col_btn2:
-            # Exporta a especialidade ativa selecionada
-            pass
+            pass # Espaço para exportação dedicada
 
         st.markdown("<hr style='margin-top: 5px; margin-bottom: 15px;'>", unsafe_allow_html=True)
         
-        # Seleção da Especialidade (Abas do Excel mapeadas)
-        especialidades_disponiveis = list(st.session_state.db_valores_por_especialidade.keys())
+        # Especialidades sempre fixas e visíveis no Visual
         especialidade_selecionada = st.radio(
             "Selecione a Especialidade:",
-            especialidades_disponiveis,
+            especialidades_fixas,
             horizontal=True
         )
         
         st.markdown(f"**TABELA DE VALORES - {especialidade_selecionada} | CLÍNICA ESPAÇO SAÚDE**")
         
-        # Obtém o DataFrame da especialidade selecionada
+        # Garante que a especialidade selecionada existe no dicionário antes de renderizar
+        if especialidade_selecionada not in st.session_state.db_valores_por_especialidade:
+            st.session_state.db_valores_por_especialidade[especialidade_selecionada] = pd.DataFrame(columns=["PLANO DE SAÚDE", "TEMPO", "VALOR PLANO (R$)", "VALOR PROF (R$)"])
+
         df_atual = st.session_state.db_valores_por_especialidade[especialidade_selecionada]
         
-        # Grelha de Edição
+        # Grelha interativa com suporte a edição
         df_editado = st.data_editor(
             df_atual,
             num_rows="dynamic",
@@ -225,7 +223,6 @@ elif menu == "⚙️ Cadastros":
             }
         )
         
-        # Atualiza o estado da sessão com as edições feitas na tela
         st.session_state.db_valores_por_especialidade[especialidade_selecionada] = df_editado
 
     with tab2:
