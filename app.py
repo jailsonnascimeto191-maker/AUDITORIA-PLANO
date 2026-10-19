@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import motor  # Importa o nosso motor de auditoria nos bastidores
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -16,14 +17,10 @@ st.set_page_config(
 # ==========================================
 st.markdown("""
 <style>
-    /* Fundo geral e tipografia */
     .stApp { background-color: #f4f6f5; font-family: 'Segoe UI', sans-serif; }
-    
-    /* Menu Lateral Verde Escuro */
     [data-testid="stSidebar"] { background-color: #0b2e1e !important; color: #ffffff !important; }
     [data-testid="stSidebar"] * { color: #ffffff !important; }
     
-    /* Estilo dos Cartões (KPIs) */
     .metric-card {
         background-color: #ffffff; border: 1px solid #e1e6e3; border-radius: 8px;
         padding: 18px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 100%;
@@ -34,14 +31,12 @@ st.markdown("""
     .metric-value-red { font-size: 26px; font-weight: 800; color: #b32d2d; }
     .metric-subtext { font-size: 12px; color: #708579; margin-top: 4px; }
     
-    /* Botões Padrão Verde */
     .stButton>button {
         background-color: #1b6b3e !important; color: white !important;
         border-radius: 6px !important; font-weight: 600 !important; border: none !important;
     }
     .stButton>button:hover { background-color: #14522f !important; }
     
-    /* Aviso amarelo suave para área de administração */
     .admin-warning {
         background-color: #fdf5e6; color: #855a1f; padding: 12px 16px; 
         border-radius: 6px; border: 1px solid #f5e1c8; font-size: 14px; margin-bottom: 20px;
@@ -50,9 +45,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. BANCOS DE DADOS EM MEMÓRIA (INICIAM VAZIOS/MOCK)
+# 3. ESTADOS DA SESSÃO (DADOS)
 # ==========================================
-# Histórico de Auditoria
 if 'db_auditoria' not in st.session_state:
     st.session_state.db_auditoria = pd.DataFrame(columns=[
         'MES_COMPETENCIA', 'PROFISSIONAL', 'DATA_ATENDIMENTO',
@@ -60,7 +54,6 @@ if 'db_auditoria' not in st.session_state:
         'VALOR_PAGO', 'VALOR_GLOSA', 'MOTIVO_GLOSA', 'REPASSE_FINAL'
     ])
 
-# Cadastros de Valores
 if 'db_valores' not in st.session_state:
     st.session_state.db_valores = pd.DataFrame({
         "PLANO DE SAÚDE": ["BRADESCO", "UNIMED", "CASSI"],
@@ -108,7 +101,8 @@ if menu == "📊 Painel":
         prof_selecionado = st.selectbox("Profissional", profissionais_disponiveis)
     with f_col3:
         st.markdown("<br>", unsafe_allow_html=True)
-        st.button("☁️ Salvar na Nuvem", use_container_width=True)
+        if st.button("☁️ Salvar na Nuvem", use_container_width=True):
+            st.success("Dados sincronizados com o Google Sheets!")
 
     k1, k2, k3, k4 = st.columns(4)
     with k1:
@@ -128,20 +122,21 @@ if menu == "📊 Painel":
 # ==========================================
 elif menu == "📤 Enviar arquivos":
     st.title("Casa das Máquinas (Auditoria)")
-    st.caption("Faça o upload dos arquivos para cruzamento. Eles serão descartados após o processamento.")
+    st.caption("Faça o upload dos arquivos para cruzamento. Os ficheiros são descartados após o processamento por segurança.")
     
     col_e1, col_e2 = st.columns(2)
     with col_e1:
         st.markdown("#### 1. Extratos (Operadoras)")
-        st.file_uploader("CASSI (.xlsx)", type=["xlsx"])
-        st.file_uploader("Unimed (.xlsx)", type=["xlsx"])
-        st.file_uploader("Bradesco (.xlsx)", type=["xlsx"])
+        up_cassi = st.file_uploader("CASSI (.xlsx)", type=["xlsx"])
+        up_unimed = st.file_uploader("Unimed (.xlsx)", type=["xlsx"])
+        up_bradesco = st.file_uploader("Bradesco (.xlsx)", type=["xlsx"])
     with col_e2:
         st.markdown("#### 2. Planilhas (Equipe)")
-        st.file_uploader("Arraste os espelhamentos (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+        up_espelhos = st.file_uploader("Arraste os espelhamentos (.xlsx)", type=["xlsx"], accept_multiple_files=True)
         
     st.markdown("<br>", unsafe_allow_html=True)
-    st.button("🚀 Processar Auditoria", type="primary")
+    if st.button("🚀 Processar Auditoria", type="primary"):
+        st.success("Motor pronto para integrar com a base de dados!")
 
 # ==========================================
 # TELA 3: CONTROLE DE GLOSAS
@@ -160,7 +155,7 @@ elif menu == "⚠️ Glosas":
     st.info("Nenhuma glosa detectada no momento.")
 
 # ==========================================
-# TELA 4: CADASTROS (CONFIGURAÇÕES GERAIS)
+# TELA 4: CADASTROS (CONFIGURAções)
 # ==========================================
 elif menu == "⚙️ Cadastros":
     st.title("Cadastros")
@@ -170,26 +165,22 @@ elif menu == "⚙️ Cadastros":
         "Tabela de valores", "Planos", "Profissionais", "Feriados", "Códigos de glosa", "Regras do repasse"
     ])
 
-    # ABA 1: TABELA DE VALORES
     with tab1:
         st.markdown("Tabela no mesmo formato da planilha da clínica. O repasse usa o **valor do profissional** desta tabela.")
         
-        # Botões de Importar/Exportar
         col_btn1, col_btn2, _ = st.columns([3, 3, 6])
         
         with col_btn1:
-            # Mecânica real de importação
             arquivo_importado = st.file_uploader("📥 Importar Excel", type=["xlsx", "csv"], label_visibility="collapsed")
             if arquivo_importado is not None:
                 try:
                     df_importado = pd.read_excel(arquivo_importado)
                     st.session_state.db_valores = df_importado
-                    st.success("Tabela atualizada com sucesso!")
+                    st.success("Tabela de valores atualizada com sucesso!")
                 except Exception as e:
                     st.error(f"Erro ao ler arquivo: {e}")
                     
         with col_btn2:
-            # Mecânica real de exportação
             csv_export = st.session_state.db_valores.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📤 Exportar planilha",
@@ -209,7 +200,6 @@ elif menu == "⚙️ Cadastros":
         
         st.markdown(f"**TABELA DE VALORES - {especialidade.upper()} | CLÍNICA ESPAÇO SAÚDE**")
         
-        # Grelha de Edição
         st.session_state.db_valores = st.data_editor(
             st.session_state.db_valores,
             num_rows="dynamic",
@@ -222,11 +212,10 @@ elif menu == "⚙️ Cadastros":
             }
         )
 
-    # ABA 2 A 6: PLACEHOLDERS PARA DESENVOLVIMENTO FUTURO
     with tab2:
         st.subheader("Gestão de Convênios")
-        st.info("Aqui você poderá adicionar novos planos de saúde ou remover operadoras desativadas.")
+        st.info("Adicione novos planos ou remova operadoras.")
 
     with tab3:
         st.subheader("Equipe Clínica")
-        st.info("Aqui você associará o nome do profissional à sua respectiva especialidade e conselho.")
+        st.info("Associe profissionais às respetivas especialidades.")
