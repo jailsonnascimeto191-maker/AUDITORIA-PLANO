@@ -76,21 +76,14 @@ def extrair_nome_operadora(texto):
     return 'INDEFINIDO'
 
 def processar_tabela_valores_por_abas(arquivo_upload):
-    """
-    Lê um Excel enviado pelo usuário onde cada aba (sheet) representa uma especialidade 
-    e traduz as colunas para o padrão do sistema.
-    """
     try:
         xl = pd.ExcelFile(arquivo_upload)
         dados_por_especialidade = {}
         
         for aba in xl.sheet_names:
             df_aba = xl.parse(aba)
-            
-            # Limpeza básica e localização de cabeçalhos
             df_aba.columns = [str(c).strip().upper() for c in df_aba.columns]
             
-            # Tenta mapear colunas flexivelmente
             col_plano = next((c for c in df_aba.columns if any(k in c for k in ['PLANO', 'CONVENIO', 'OPERADORA'])), None)
             col_tempo = next((c for c in df_aba.columns if any(k in c for k in ['TEMPO', 'MIN', 'DURACAO'])), None)
             col_v_plano = next((c for c in df_aba.columns if any(k in c for k in ['VALOR PLANO', 'PLANO (R$)', 'VALOR (R$)'])), None)
@@ -103,7 +96,6 @@ def processar_tabela_valores_por_abas(arquivo_upload):
                     "VALOR PLANO (R$)": pd.to_numeric(df_aba[col_v_plano], errors='coerce').fillna(0.0) if col_v_plano else 0.0,
                     "VALOR PROF (R$)": pd.to_numeric(df_aba[col_v_prof], errors='coerce').fillna(0.0) if col_v_prof else 0.0
                 })
-                # Remove linhas vazias
                 df_formatado = df_formatado.dropna(subset=["PLANO DE SAÚDE"])
                 dados_por_especialidade[aba.upper()] = df_formatado
                 
