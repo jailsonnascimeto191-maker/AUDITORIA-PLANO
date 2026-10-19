@@ -3,6 +3,7 @@ import openpyxl
 import re
 import unicodedata
 import difflib
+import io
 
 def normalizar_nome(nome):
     if pd.isnull(nome): return ""
@@ -73,9 +74,14 @@ def extrair_nome_operadora(texto):
     if 'MEDS' in t or 'MED S' in t: return 'MEDSERVICE'
     if 'UNIMED' in t: return 'UNIMED'
     if 'CASSI' in t: return 'CASSI'
+    if 'SUL' in t: return 'SULAMÉRICA'
     return 'INDEFINIDO'
 
 def processar_tabela_valores_por_abas(arquivo_upload):
+    """
+    Lê o ficheiro Excel enviado na aba de Cadastros, varre todas as abas (especialidades) 
+    e traduz as colunas para o formato padrão do sistema.
+    """
     try:
         xl = pd.ExcelFile(arquivo_upload)
         dados_por_especialidade = {}
@@ -84,6 +90,7 @@ def processar_tabela_valores_por_abas(arquivo_upload):
             df_aba = xl.parse(aba)
             df_aba.columns = [str(c).strip().upper() for c in df_aba.columns]
             
+            # Localiza flexivelmente as colunas independentemente da exatidão do nome
             col_plano = next((c for c in df_aba.columns if any(k in c for k in ['PLANO', 'CONVENIO', 'OPERADORA'])), None)
             col_tempo = next((c for c in df_aba.columns if any(k in c for k in ['TEMPO', 'MIN', 'DURACAO'])), None)
             col_v_plano = next((c for c in df_aba.columns if any(k in c for k in ['VALOR PLANO', 'PLANO (R$)', 'VALOR (R$)'])), None)
