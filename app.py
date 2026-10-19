@@ -12,10 +12,93 @@ warnings.filterwarnings('ignore', category=UserWarning)
 
 # Configuração da Página no Streamlit
 st.set_page_config(
-    page_title="Auditoria & Repasse Financeiro",
+    page_title="Espaço Saúde - Sistema de Análise de Produção",
     page_icon="🏥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# ==========================================
+# ESTILIZAÇÃO CSS (VISUAL ESPAÇO SAÚDE)
+# ==========================================
+st.markdown("""
+<style>
+    /* Fundo geral da aplicação */
+    .stApp {
+        background-color: #f4f6f5;
+        font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+    }
+    
+    /* Menu Lateral Verde Escuro */
+    [data-testid="stSidebar"] {
+        background-color: #0b2e1e !important;
+        color: #ffffff !important;
+    }
+    [data-testid="stSidebar"] * {
+        color: #ffffff !important;
+    }
+    
+    /* Cartões de Métricas (KPIs Superior) */
+    .metric-card {
+        background-color: #ffffff;
+        border: 1px solid #e1e6e3;
+        border-radius: 8px;
+        padding: 18px 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    .metric-title {
+        font-size: 11px;
+        font-weight: 700;
+        color: #556b60;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 6px;
+    }
+    .metric-value {
+        font-size: 26px;
+        font-weight: 800;
+        color: #0d2818;
+    }
+    .metric-value-green {
+        font-size: 26px;
+        font-weight: 800;
+        color: #1e7e48;
+    }
+    .metric-subtext {
+        font-size: 12px;
+        color: #708579;
+        margin-top: 4px;
+    }
+    
+    /* Caixa "O que fazer agora" */
+    .action-card {
+        background-color: #ffffff;
+        border: 1px solid #e1e6e3;
+        border-left: 5px solid #a87210;
+        border-radius: 8px;
+        padding: 18px 22px;
+        margin-top: 20px;
+        margin-bottom: 20px;
+    }
+    
+    /* Botões em Verde Primário */
+    .stButton>button {
+        background-color: #1b6b3e !important;
+        color: white !important;
+        border-radius: 6px !important;
+        font-weight: 600 !important;
+        border: none !important;
+        padding: 10px 20px !important;
+    }
+    .stButton>button:hover {
+        background-color: #14522f !important;
+    }
+    
+    /* Esconder elementos padrão do Streamlit */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # FUNÇÕES DE LIMPEZA E PADRONIZAÇÃO
@@ -92,280 +175,355 @@ def extrair_nome_operadora(texto):
     return 'INDEFINIDO'
 
 # ==========================================
-# INTERFACE WEB (STREAMLIT)
+# BARRA LATERAL (SIDEBAR)
 # ==========================================
-st.title("🏥 Sistema de Auditoria & Repasse Médico")
-st.markdown("Plataforma automatizada para cruzamento de extratos de convênios com os espelhamentos dos profissionais.")
+with st.sidebar:
+    st.markdown("## 🏥 Espaço Saúde")
+    st.markdown("<p style='font-size: 12px; color: #a3b8ac; margin-top: -15px;'>Sistema de Análise de Produção</p>", unsafe_allow_html=True)
+    st.markdown("---")
+    
+    menu = st.radio(
+        "Navegação",
+        ["📊 Painel", "📁 Enviar arquivos", "🩺 Atendimentos", "📄 Demonstrativos", "⚠️ Glosas"],
+        label_visibility="collapsed"
+    )
 
-st.sidebar.header("📁 1. Extratos das Operadoras")
+# ==========================================
+# TOPO DO PAINEL
+# ==========================================
+col_titulo, col_usuario = st.columns([3, 1])
 
-up_cassi = st.sidebar.file_uploader("CASSI (.xlsx)", type=["xlsx"])
-up_unimed = st.sidebar.file_uploader("Unimed (.xlsx)", type=["xlsx"])
-up_bradesco = st.sidebar.file_uploader("Bradesco (.xlsx)", type=["xlsx"])
-up_fox = st.sidebar.file_uploader("Fox Saúde (.csv)", type=["csv"])
-up_medservice = st.sidebar.file_uploader("Medservice (.xlsx)", type=["xlsx"])
+with col_titulo:
+    st.title("Painel")
+    st.caption("🟢 Salvo na nuvem · Outubro 2026")
 
-st.header("📋 2. Espelhamentos dos Profissionais")
-up_espelhamentos = st.file_uploader(
-    "Arraste as planilhas dos profissionais (.xlsx)", 
-    type=["xlsx"], 
-    accept_multiple_files=True
-)
+with col_usuario:
+    st.markdown("<br><p style='text-align: right; font-weight: 600; font-size: 15px;'>Olá, <b>Jailson</b></p>", unsafe_allow_html=True)
 
-if st.button("🚀 Executar Auditoria Completa", type="primary"):
-    if not up_espelhamentos:
-        st.warning("Envie pelo menos um arquivo de espelhamento para iniciar a auditoria.")
-    else:
-        lista_piscina = []
+# ==========================================
+# CONTEÚDO PRINCIPAL
+# ==========================================
 
-        # ------------------ LEITURA CASSI ------------------
-        if up_cassi is not None:
-            try:
-                xls_cassi = pd.ExcelFile(up_cassi)
-                aba_cassi = 'Geral Completo' if 'Geral Completo' in xls_cassi.sheet_names else xls_cassi.sheet_names[0]
-                df_cassi = pd.read_excel(xls_cassi, sheet_name=aba_cassi)
-                for _, r in df_cassi.iterrows():
-                    g_val = float(r.get('Val. Glosa', 0) or 0)
-                    qtd = float(r.get('Quantidade', 1) or 1)
-                    desc_proc = str(r.get('Nome Procedimento', ''))
-                    lista_piscina.append(pd.DataFrame([{
-                        'PACIENTE': normalizar_nome(str(r.get('Nome Paciente', ''))),
-                        'DATA': None,
-                        'ESPECIALIDADE': descobrir_especialidade(desc_proc),
-                        'VALOR_LIBERADO_PLANO': float(r.get('Val. Liberado', 0) or 0),
-                        'VALOR_GLOSA': g_val,
-                        'MOTIVO_GLOSA': f'Glosa CASSI (R$ {g_val})' if g_val > 0 else 'Sem Glosa',
-                        'OPERADORA': 'CASSI',
-                        'QTD': qtd
-                    }]))
-            except Exception as e:
-                st.error(f"Erro ao processar CASSI: {e}")
+# Estado da sessão para guardar os totais calculados
+if 'tot_valida' not in st.session_state: st.session_state.tot_valida = 0.0
+if 'tot_recebido' not in st.session_state: st.session_state.tot_recebido = 0.0
+if 'tot_glosa' not in st.session_state: st.session_state.tot_glosa = 0.0
+if 'tot_repasse' not in st.session_state: st.session_state.tot_repasse = 0.0
+if 'qtd_atend' not in st.session_state: st.session_state.qtd_atend = 0
 
-        # ------------------ LEITURA BRADESCO ------------------
-        if up_bradesco is not None:
-            try:
-                xls_brad = pd.ExcelFile(up_bradesco)
-                for aba in xls_brad.sheet_names:
-                    df_brad = pd.read_excel(xls_brad, sheet_name=aba, header=None)
-                    curr_pac, curr_data = None, None
-                    for _, r in df_brad.iterrows():
-                        v0, v1, v2 = r.values[0], r.values[1], r.values[2]
-                        if pd.notnull(v0) and pd.notnull(v1) and str(v0).strip() != 'Data do Evento' and 'Liberado' not in str(v0):
-                            dt, _ = extrair_datas_lista(v0)
-                            curr_data = dt[0] if dt else None
-                            curr_pac = normalizar_nome(v1)
-                        elif pd.isnull(v0) and pd.isnull(v1) and pd.notnull(v2) and str(v2).strip() != 'Código do Procedimento':
-                            r_just = str(r.values[10]).strip()
-                            try: valor = float(r.values[9])
-                            except: valor = 0.0
-                            lista_piscina.append(pd.DataFrame([{
-                                'PACIENTE': curr_pac, 'DATA': curr_data, 
-                                'ESPECIALIDADE': descobrir_especialidade(r.values[3]), 
-                                'VALOR_LIBERADO_PLANO': valor, 'VALOR_GLOSA': 0.0, 
-                                'MOTIVO_GLOSA': r_just if r_just and r_just.lower() != 'nan' else 'Sem Glosa', 
-                                'OPERADORA': 'BRADESCO', 'QTD': 1
-                            }]))
-            except Exception as e:
-                st.error(f"Erro ao processar Bradesco: {e}")
+# 1. CARTOES DE METRICAS (KPIs)
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
-        # ------------------ LEITURA FOX SAÚDE ------------------
-        if up_fox is not None:
-            try:
-                df_fox = pd.read_csv(up_fox, sep=';', encoding='latin1')
-                for _, r in df_fox.iterrows():
-                    mot = str(r.get('Cod. Glosa', 'Sem Glosa'))
-                    dt, _ = extrair_datas_lista(r.get('Data', None))
-                    lista_piscina.append(pd.DataFrame([{
-                        'PACIENTE': normalizar_nome(str(r.get('Nome', ''))),
-                        'DATA': dt[0] if dt else None,
-                        'ESPECIALIDADE': descobrir_especialidade(r.get('Descrição', '')),
-                        'VALOR_LIBERADO_PLANO': float(r.get('Valor Total', 0) or 0),
-                        'VALOR_GLOSA': float(r.get('Val. Glosa', 0) or 0),
-                        'MOTIVO_GLOSA': mot if pd.notnull(mot) and mot != 'nan' else 'Sem Glosa',
-                        'OPERADORA': 'FOX', 'QTD': 1
-                    }]))
-            except Exception as e:
-                st.error(f"Erro ao processar Fox Saúde: {e}")
+with kpi1:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">Produção Válida</div>
+        <div class="metric-value">R$ {st.session_state.tot_valida:,.2f}</div>
+        <div class="metric-subtext">{st.session_state.qtd_atend} atendimentos</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        # ------------------ LEITURA MEDSERVICE ------------------
-        if up_medservice is not None:
-            try:
-                df_med = pd.read_excel(up_medservice)
-                for _, r in df_med.iterrows():
-                    g_val = float(r.get('Glosa Procedimento (R$)', 0) or 0)
-                    dt, _ = extrair_datas_lista(r.get('Data Realização', None))
-                    lista_piscina.append(pd.DataFrame([{
-                        'PACIENTE': normalizar_nome(str(r.get('Beneficiário', ''))),
-                        'DATA': dt[0] if dt else None,
-                        'ESPECIALIDADE': descobrir_especialidade(str(r.get('Descrição', ''))),
-                        'VALOR_LIBERADO_PLANO': float(r.get('Valor Liberado (R$)', 0) or 0),
-                        'VALOR_GLOSA': g_val,
-                        'MOTIVO_GLOSA': 'Glosa Medservice' if g_val > 0 else 'Sem Glosa',
-                        'OPERADORA': 'MEDSERVICE',
-                        'QTD': float(r.get('Quantidade Faturada', 1) or 1)
-                    }]))
-            except Exception as e:
-                st.error(f"Erro ao processar Medservice: {e}")
+with kpi2:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">Recebido dos Planos</div>
+        <div class="metric-value">R$ {st.session_state.tot_recebido:,.2f}</div>
+        <div class="metric-subtext">Demonstrativos processados</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        # ------------------ LEITURA UNIMED ------------------
-        if up_unimed is not None:
-            try:
-                xls_uni = pd.ExcelFile(up_unimed)
-                if 'Produção Paga' in xls_uni.sheet_names:
-                    for _, r in pd.read_excel(xls_uni, sheet_name='Produção Paga').iterrows():
-                        n = str(r.get('Nome do Paciente', ''))
-                        pac = n.split(' - ', 1)[1] if ' - ' in n else n
-                        qtd_uni = float(r.get('Quantidade', 1) or 1)
+with kpi3:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">Glosado</div>
+        <div class="metric-value">R$ {st.session_state.tot_glosa:,.2f}</div>
+        <div class="metric-subtext">Valor retido pelos convênios</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with kpi4:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-title">Repasse aos Profissionais</div>
+        <div class="metric-value-green">R$ {st.session_state.tot_repasse:,.2f}</div>
+        <div class="metric-subtext">Base: Espelhamentos</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# 2. ÁREA DE AUDITORIA E ENVIOS
+st.markdown("<br>", unsafe_allow_html=True)
+
+if menu == "📊 Painel" or menu == "📁 Enviar arquivos":
+    st.subheader("📥 Enviar arquivos para auditoria")
+    
+    col_e1, col_e2 = st.columns(2)
+    
+    with col_e1:
+        st.markdown("#### 1. Extratos dos Convênios")
+        up_cassi = st.file_uploader("CASSI (.xlsx)", type=["xlsx"])
+        up_unimed = st.file_uploader("Unimed (.xlsx)", type=["xlsx"])
+        up_bradesco = st.file_uploader("Bradesco (.xlsx)", type=["xlsx"])
+        up_fox = st.file_uploader("Fox Saúde (.csv)", type=["csv"])
+        up_medservice = st.file_uploader("Medservice (.xlsx)", type=["xlsx"])
+
+    with col_e2:
+        st.markdown("#### 2. Espelhamentos dos Profissionais")
+        up_espelhamentos = st.file_uploader(
+            "Arraste as planilhas dos profissionais (.xlsx)", 
+            type=["xlsx"], 
+            accept_multiple_files=True
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🚀 Executar Auditoria do Mês", type="primary"):
+        if not up_espelhamentos:
+            st.warning("Envie pelo menos uma planilha de espelhamento para realizar a auditoria.")
+        else:
+            lista_piscina = []
+
+            # Reading Cassi
+            if up_cassi is not None:
+                try:
+                    xls_cassi = pd.ExcelFile(up_cassi)
+                    aba_cassi = 'Geral Completo' if 'Geral Completo' in xls_cassi.sheet_names else xls_cassi.sheet_names[0]
+                    df_cassi = pd.read_excel(xls_cassi, sheet_name=aba_cassi)
+                    for _, r in df_cassi.iterrows():
+                        g_val = float(r.get('Val. Glosa', 0) or 0)
+                        qtd = float(r.get('Quantidade', 1) or 1)
+                        desc_proc = str(r.get('Nome Procedimento', ''))
+                        lista_piscina.append(pd.DataFrame([{
+                            'PACIENTE': normalizar_nome(str(r.get('Nome Paciente', ''))),
+                            'DATA': None, 'ESPECIALIDADE': descobrir_especialidade(desc_proc),
+                            'VALOR_LIBERADO_PLANO': float(r.get('Val. Liberado', 0) or 0),
+                            'VALOR_GLOSA': g_val, 'MOTIVO_GLOSA': f'Glosa CASSI (R$ {g_val})' if g_val > 0 else 'Sem Glosa',
+                            'OPERADORA': 'CASSI', 'QTD': qtd
+                        }]))
+                except Exception as e: st.error(f"Erro ao ler CASSI: {e}")
+
+            # Reading Bradesco
+            if up_bradesco is not None:
+                try:
+                    xls_brad = pd.ExcelFile(up_bradesco)
+                    for aba in xls_brad.sheet_names:
+                        df_brad = pd.read_excel(xls_brad, sheet_name=aba, header=None)
+                        curr_pac, curr_data = None, None
+                        for _, r in df_brad.iterrows():
+                            v0, v1, v2 = r.values[0], r.values[1], r.values[2]
+                            if pd.notnull(v0) and pd.notnull(v1) and str(v0).strip() != 'Data do Evento' and 'Liberado' not in str(v0):
+                                dt, _ = extrair_datas_lista(v0)
+                                curr_data = dt[0] if dt else None
+                                curr_pac = normalizar_nome(v1)
+                            elif pd.isnull(v0) and pd.isnull(v1) and pd.notnull(v2) and str(v2).strip() != 'Código do Procedimento':
+                                r_just = str(r.values[10]).strip()
+                                try: valor = float(r.values[9])
+                                except: valor = 0.0
+                                lista_piscina.append(pd.DataFrame([{
+                                    'PACIENTE': curr_pac, 'DATA': curr_data, 
+                                    'ESPECIALIDADE': descobrir_especialidade(r.values[3]), 
+                                    'VALOR_LIBERADO_PLANO': valor, 'VALOR_GLOSA': 0.0, 
+                                    'MOTIVO_GLOSA': r_just if r_just and r_just.lower() != 'nan' else 'Sem Glosa', 
+                                    'OPERADORA': 'BRADESCO', 'QTD': 1
+                                }]))
+                except Exception as e: st.error(f"Erro ao ler Bradesco: {e}")
+
+            # Reading Fox
+            if up_fox is not None:
+                try:
+                    df_fox = pd.read_csv(up_fox, sep=';', encoding='latin1')
+                    for _, r in df_fox.iterrows():
+                        mot = str(r.get('Cod. Glosa', 'Sem Glosa'))
                         dt, _ = extrair_datas_lista(r.get('Data', None))
                         lista_piscina.append(pd.DataFrame([{
-                            'PACIENTE': normalizar_nome(pac), 'DATA': dt[0] if dt else None,
-                            'ESPECIALIDADE': descobrir_especialidade(str(r.get('Descrição', ''))),
-                            'VALOR_LIBERADO_PLANO': float(r.get('Valor (R$)', 0) or 0),
-                            'VALOR_GLOSA': 0.0, 'MOTIVO_GLOSA': 'Sem Glosa',
-                            'OPERADORA': 'UNIMED', 'QTD': qtd_uni
+                            'PACIENTE': normalizar_nome(str(r.get('Nome', ''))),
+                            'DATA': dt[0] if dt else None, 'ESPECIALIDADE': descobrir_especialidade(r.get('Descrição', '')),
+                            'VALOR_LIBERADO_PLANO': float(r.get('Valor Total', 0) or 0),
+                            'VALOR_GLOSA': float(r.get('Val. Glosa', 0) or 0),
+                            'MOTIVO_GLOSA': mot if pd.notnull(mot) and mot != 'nan' else 'Sem Glosa',
+                            'OPERADORA': 'FOX', 'QTD': 1
                         }]))
-                if 'Glosas' in xls_uni.sheet_names:
-                    for _, r in pd.read_excel(xls_uni, sheet_name='Glosas').iterrows():
-                        n = str(r.get('Nome do Paciente', ''))
-                        pac = n.split(' - ', 1)[1] if ' - ' in n else n
-                        dt, _ = extrair_datas_lista(r.get('Dia do Atendimento', None))
+                except Exception as e: st.error(f"Erro ao ler Fox: {e}")
+
+            # Reading Medservice
+            if up_medservice is not None:
+                try:
+                    df_med = pd.read_excel(up_medservice)
+                    for _, r in df_med.iterrows():
+                        g_val = float(r.get('Glosa Procedimento (R$)', 0) or 0)
+                        dt, _ = extrair_datas_lista(r.get('Data Realização', None))
                         lista_piscina.append(pd.DataFrame([{
-                            'PACIENTE': normalizar_nome(pac), 'DATA': dt[0] if dt else None,
-                            'ESPECIALIDADE': descobrir_especialidade(str(r.get('Nome do Procedimento', ''))),
-                            'VALOR_LIBERADO_PLANO': 0.0, 'VALOR_GLOSA': float(r.get('Valor da Glosa', 0) or 0),
-                            'MOTIVO_GLOSA': str(r.get('Motivo da Glosa', 'Glosa Unimed')),
-                            'OPERADORA': 'UNIMED', 'QTD': 1
+                            'PACIENTE': normalizar_nome(str(r.get('Beneficiário', ''))),
+                            'DATA': dt[0] if dt else None, 'ESPECIALIDADE': descobrir_especialidade(str(r.get('Descrição', ''))),
+                            'VALOR_LIBERADO_PLANO': float(r.get('Valor Liberado (R$)', 0) or 0),
+                            'VALOR_GLOSA': g_val, 'MOTIVO_GLOSA': 'Glosa Medservice' if g_val > 0 else 'Sem Glosa',
+                            'OPERADORA': 'MEDSERVICE', 'QTD': float(r.get('Quantidade Faturada', 1) or 1)
                         }]))
-            except Exception as e:
-                st.error(f"Erro ao processar Unimed: {e}")
+                except Exception as e: st.error(f"Erro ao ler Medservice: {e}")
 
-        # CONSOLIDAÇÃO DA PISCINA
-        piscina = pd.concat(lista_piscina, ignore_index=True) if lista_piscina else pd.DataFrame()
-        if not piscina.empty:
-            piscina['QTD'] = pd.to_numeric(piscina['QTD']).fillna(1).apply(lambda x: 1 if x <= 0 else x)
-            piscina['QTD_RESTANTE'] = piscina['QTD']
-            piscina['VALOR_UNITARIO_LIBERADO'] = piscina['VALOR_LIBERADO_PLANO'] / piscina['QTD']
-            piscina['VALOR_UNITARIO_GLOSA'] = piscina['VALOR_GLOSA'] / piscina['QTD']
+            # Reading Unimed
+            if up_unimed is not None:
+                try:
+                    xls_uni = pd.ExcelFile(up_unimed)
+                    if 'Produção Paga' in xls_uni.sheet_names:
+                        for _, r in pd.read_excel(xls_uni, sheet_name='Produção Paga').iterrows():
+                            n = str(r.get('Nome do Paciente', ''))
+                            pac = n.split(' - ', 1)[1] if ' - ' in n else n
+                            qtd_uni = float(r.get('Quantidade', 1) or 1)
+                            dt, _ = extrair_datas_lista(r.get('Data', None))
+                            lista_piscina.append(pd.DataFrame([{
+                                'PACIENTE': normalizar_nome(pac), 'DATA': dt[0] if dt else None,
+                                'ESPECIALIDADE': descobrir_especialidade(str(r.get('Descrição', ''))),
+                                'VALOR_LIBERADO_PLANO': float(r.get('Valor (R$)', 0) or 0),
+                                'VALOR_GLOSA': 0.0, 'MOTIVO_GLOSA': 'Sem Glosa',
+                                'OPERADORA': 'UNIMED', 'QTD': qtd_uni
+                            }]))
+                    if 'Glosas' in xls_uni.sheet_names:
+                        for _, r in pd.read_excel(xls_uni, sheet_name='Glosas').iterrows():
+                            n = str(r.get('Nome do Paciente', ''))
+                            pac = n.split(' - ', 1)[1] if ' - ' in n else n
+                            dt, _ = extrair_datas_lista(r.get('Dia do Atendimento', None))
+                            lista_piscina.append(pd.DataFrame([{
+                                'PACIENTE': normalizar_nome(pac), 'DATA': dt[0] if dt else None,
+                                'ESPECIALIDADE': descobrir_especialidade(str(r.get('Nome do Procedimento', ''))),
+                                'VALOR_LIBERADO_PLANO': 0.0, 'VALOR_GLOSA': float(r.get('Valor da Glosa', 0) or 0),
+                                'MOTIVO_GLOSA': str(r.get('Motivo da Glosa', 'Glosa Unimed')),
+                                'OPERADORA': 'UNIMED', 'QTD': 1
+                            }]))
+                except Exception as e: st.error(f"Erro ao ler Unimed: {e}")
 
-        lista_pacientes = piscina['PACIENTE'].unique().tolist() if not piscina.empty else []
+            # Consolidação
+            piscina = pd.concat(lista_piscina, ignore_index=True) if lista_piscina else pd.DataFrame()
+            if not piscina.empty:
+                piscina['QTD'] = pd.to_numeric(piscina['QTD']).fillna(1).apply(lambda x: 1 if x <= 0 else x)
+                piscina['QTD_RESTANTE'] = piscina['QTD']
+                piscina['VALOR_UNITARIO_LIBERADO'] = piscina['VALOR_LIBERADO_PLANO'] / piscina['QTD']
+                piscina['VALOR_UNITARIO_GLOSA'] = piscina['VALOR_GLOSA'] / piscina['QTD']
 
-        st.success(f"Piscina de Pagamentos Consolidada com {len(piscina)} lançamentos!")
+                # Atualiza os cartões superiores
+                st.session_state.tot_recebido = piscina['VALOR_LIBERADO_PLANO'].sum()
+                st.session_state.tot_glosa = piscina['VALOR_GLOSA'].sum()
+                st.session_state.qtd_atend = len(piscina)
 
-        # PROCESSAMENTO DOS ESPELHAMENTOS
-        def aspirar_valores(filtro):
-            liberado, glosa, mts = 0.0, 0.0, []
-            indices = piscina[filtro & (piscina['QTD_RESTANTE'] > 0)].index
-            for idx in indices:
-                usar = piscina.at[idx, 'QTD_RESTANTE']
-                piscina.at[idx, 'QTD_RESTANTE'] = 0
-                liberado += usar * piscina.at[idx, 'VALOR_UNITARIO_LIBERADO']
-                glosa += usar * piscina.at[idx, 'VALOR_UNITARIO_GLOSA']
-                m = str(piscina.at[idx, 'MOTIVO_GLOSA'])
-                if m and m != 'Sem Glosa' and m not in mts: mts.append(m)
-            return liberado, glosa, mts
+            lista_pacientes = piscina['PACIENTE'].unique().tolist() if not piscina.empty else []
 
-        st.subheader("📥 Arquivos Auditados para Download")
+            def aspirar_valores(filtro):
+                liberado, glosa, mts = 0.0, 0.0, []
+                indices = piscina[filtro & (piscina['QTD_RESTANTE'] > 0)].index
+                for idx in indices:
+                    usar = piscina.at[idx, 'QTD_RESTANTE']
+                    piscina.at[idx, 'QTD_RESTANTE'] = 0
+                    liberado += usar * piscina.at[idx, 'VALOR_UNITARIO_LIBERADO']
+                    glosa += usar * piscina.at[idx, 'VALOR_UNITARIO_GLOSA']
+                    m = str(piscina.at[idx, 'MOTIVO_GLOSA'])
+                    if m and m != 'Sem Glosa' and m not in mts: mts.append(m)
+                return liberado, glosa, mts
 
-        for arq in up_espelhamentos:
-            nome_arq = arq.name
-            espec_planilha = descobrir_especialidade(nome_arq)
-            
-            wb = openpyxl.load_workbook(arq)
-            if "Auditoria segundo os planos" in wb.sheetnames: del wb["Auditoria segundo os planos"]
-            ws_resumo = wb.create_sheet(title="Auditoria segundo os planos")
-            
-            headers = ['PROFISSIONAL / ABA', 'PACIENTE', 'CONVÊNIO', 'VALOR INFORMADO', 'VALOR LIBERADO', 'DIFERENÇA (SALDO)', 'STATUS', 'MOTIVO DA GLOSA']
-            ws_resumo.append(headers)
-            for c in range(1, len(headers)+1):
-                ws_resumo.cell(row=1, column=c).font = openpyxl.styles.Font(bold=True, color="FFFFFF")
-                ws_resumo.cell(row=1, column=c).fill = openpyxl.styles.PatternFill(start_color="1F4E78", fill_type="solid")
+            st.success("✨ Auditoria realizada com sucesso! Descarregue os espelhamentos atualizados abaixo:")
 
-            tot_inf, tot_lib = 0.0, 0.0
+            tot_repasse_geral = 0.0
 
-            for aba in wb.sheetnames:
-                if aba.lower() in ['ref_planos', 'auditoria segundo os planos']: continue
-                ws = wb[aba]
+            for arq in up_espelhamentos:
+                nome_arq = arq.name
+                espec_planilha = descobrir_especialidade(nome_arq)
                 
-                hr, col_pac, col_val, col_conv = None, None, None, None
-                for r in range(1, 15):
-                    for c in range(1, 15):
-                        val = str(ws.cell(row=r, column=c).value).strip().upper()
-                        if 'PACIENTE' in val: col_pac, hr = c, r
-                        elif 'TOTAL' in val or 'VALOR' in val: 
-                            if not col_val and c > 2: col_val = c
-                        elif 'PLANO' in val or 'CONVENIO' in val or 'CONVÊNIO' in val or 'OPERADORA' in val:
-                            col_conv = c
-                    if hr: break
+                wb = openpyxl.load_workbook(arq)
+                if "Auditoria segundo os planos" in wb.sheetnames: del wb["Auditoria segundo os planos"]
+                ws_resumo = wb.create_sheet(title="Auditoria segundo os planos")
                 
-                if hr and col_pac:
-                    col_lib, col_glo, col_mot, col_sta = ws.max_column+1, ws.max_column+2, ws.max_column+3, ws.max_column+4
-                    for c in range(1, ws.max_column + 1):
-                        hv = str(ws.cell(row=hr, column=c).value).strip().upper()
-                        if hv == 'VALOR_LIBERADO_PLANO': col_lib = c
-                        elif hv == 'VALOR_GLOSA': col_glo = c
-                        elif hv == 'MOTIVO_GLOSA': col_mot = c
-                        elif hv == 'STATUS_PLANO_AUDITADO': col_sta = c
+                headers = ['PROFISSIONAL / ABA', 'PACIENTE', 'CONVÊNIO', 'VALOR INFORMADO', 'VALOR LIBERADO', 'DIFERENÇA (SALDO)', 'STATUS', 'MOTIVO DA GLOSA']
+                ws_resumo.append(headers)
+                for c in range(1, len(headers)+1):
+                    ws_resumo.cell(row=1, column=c).font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+                    ws_resumo.cell(row=1, column=c).fill = openpyxl.styles.PatternFill(start_color="0B2E1E", fill_type="solid")
+
+                tot_inf, tot_lib = 0.0, 0.0
+
+                for aba in wb.sheetnames:
+                    if aba.lower() in ['ref_planos', 'auditoria segundo os planos']: continue
+                    ws = wb[aba]
                     
-                    ws.cell(row=hr, column=col_lib, value="VALOR_LIBERADO_PLANO")
-                    ws.cell(row=hr, column=col_glo, value="VALOR_GLOSA")
-                    ws.cell(row=hr, column=col_mot, value="MOTIVO_GLOSA")
-                    ws.cell(row=hr, column=col_sta, value="STATUS_PLANO_AUDITADO")
+                    hr, col_pac, col_val, col_conv = None, None, None, None
+                    for r in range(1, 15):
+                        for c in range(1, 15):
+                            val = str(ws.cell(row=r, column=c).value).strip().upper()
+                            if 'PACIENTE' in val: col_pac, hr = c, r
+                            elif 'TOTAL' in val or 'VALOR' in val: 
+                                if not col_val and c > 2: col_val = c
+                            elif 'PLANO' in val or 'CONVENIO' in val or 'CONVÊNIO' in val or 'OPERADORA' in val:
+                                col_conv = c
+                        if hr: break
                     
-                    for r in range(hr + 1, ws.max_row + 1):
-                        nome_pac = ws.cell(row=r, column=col_pac).value
-                        if not nome_pac: continue
+                    if hr and col_pac:
+                        col_lib, col_glo, col_mot, col_sta = ws.max_column+1, ws.max_column+2, ws.max_column+3, ws.max_column+4
+                        for c in range(1, ws.max_column + 1):
+                            hv = str(ws.cell(row=hr, column=c).value).strip().upper()
+                            if hv == 'VALOR_LIBERADO_PLANO': col_lib = c
+                            elif hv == 'VALOR_GLOSA': col_glo = c
+                            elif hv == 'MOTIVO_GLOSA': col_mot = c
+                            elif hv == 'STATUS_PLANO_AUDITADO': col_sta = c
                         
-                        raw_conv = str(ws.cell(row=r, column=col_conv).value) if col_conv else ""
-                        op_esperada = extrair_nome_operadora(raw_conv)
+                        ws.cell(row=hr, column=col_lib, value="VALOR_LIBERADO_PLANO")
+                        ws.cell(row=hr, column=col_glo, value="VALOR_GLOSA")
+                        ws.cell(row=hr, column=col_mot, value="MOTIVO_GLOSA")
+                        ws.cell(row=hr, column=col_sta, value="STATUS_PLANO_AUDITADO")
                         
-                        try: val_prof = float(ws.cell(row=r, column=col_val).value or 0) if col_val else 0.0
-                        except: val_prof = 0.0
-
-                        nome_match = encontrar_melhor_nome(nome_pac, lista_pacientes)
-                        v_lib, v_glo, motivos = 0.0, 0.0, []
-                        
-                        if not piscina.empty:
-                            base_filtro = (piscina['PACIENTE'] == nome_match)
-                            if op_esperada != 'INDEFINIDO': base_filtro = base_filtro & (piscina['OPERADORA'] == op_esperada)
-
-                            f_especialidade_estrita = base_filtro & (
-                                (piscina['ESPECIALIDADE'] == espec_planilha) | 
-                                ((espec_planilha == 'GERAL') & (piscina['ESPECIALIDADE'] == 'GERAL'))
-                            )
+                        for r in range(hr + 1, ws.max_row + 1):
+                            nome_pac = ws.cell(row=r, column=col_pac).value
+                            if not nome_pac: continue
                             
-                            l_esp, g_esp, m_esp = aspirar_valores(f_especialidade_estrita)
-                            v_lib += l_esp
-                            v_glo += g_esp
-                            motivos.extend(m_esp)
-
-                        v_mot = " | ".join(motivos) if motivos else "Sem Glosa"
-                        diferenca = v_lib - val_prof
-                        
-                        if v_lib > 0: 
-                            if diferenca < 0: status = 'PAGO A MENOS / PREJUÍZO'
-                            elif v_mot != 'Sem Glosa': status = 'PAGO COM RESSALVA / AVISO FLEX'
-                            else: status = 'PAGO PELO PLANO'
-                        else: 
-                            status = 'GLOSADO / NÃO LOCALIZADO'
+                            raw_conv = str(ws.cell(row=r, column=col_conv).value) if col_conv else ""
+                            op_esperada = extrair_nome_operadora(raw_conv)
                             
-                        ws.cell(row=r, column=col_lib, value=v_lib)
-                        ws.cell(row=r, column=col_glo, value=v_glo)
-                        ws.cell(row=r, column=col_mot, value=v_mot)
-                        ws.cell(row=r, column=col_sta, value=status)
-                        
-                        ws_resumo.append([aba, str(nome_pac), raw_conv, val_prof, v_lib, diferenca, status, v_mot])
-                        tot_inf += val_prof; tot_lib += v_lib
+                            try: val_prof = float(ws.cell(row=r, column=col_val).value or 0) if col_val else 0.0
+                            except: val_prof = 0.0
 
-            dif_total = tot_lib - tot_inf
-            ws_resumo.append(['TOTAIS', '', '', tot_inf, tot_lib, dif_total, '', ''])
-            
-            output_stream = io.BytesIO()
-            wb.save(output_stream)
-            output_stream.seek(0)
-            
-            st.download_button(
-                label=f"⬇️ Baixar AUDITADO_{nome_arq}",
-                data=output_stream,
-                file_name=f"AUDITADO_{nome_arq}",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                            nome_match = encontrar_melhor_nome(nome_pac, lista_pacientes)
+                            v_lib, v_glo, motivos = 0.0, 0.0, []
+                            
+                            if not piscina.empty:
+                                base_filtro = (piscina['PACIENTE'] == nome_match)
+                                if op_esperada != 'INDEFINIDO': base_filtro = base_filtro & (piscina['OPERADORA'] == op_esperada)
+
+                                f_especialidade_estrita = base_filtro & (
+                                    (piscina['ESPECIALIDADE'] == espec_planilha) | 
+                                    ((espec_planilha == 'GERAL') & (piscina['ESPECIALIDADE'] == 'GERAL'))
+                                )
+                                
+                                l_esp, g_esp, m_esp = aspirar_valores(f_especialidade_estrita)
+                                v_lib += l_esp; v_glo += g_esp
+                                motivos.extend(m_esp)
+
+                            v_mot = " | ".join(motivos) if motivos else "Sem Glosa"
+                            diferenca = v_lib - val_prof
+                            
+                            if v_lib > 0: status = 'PAGO PELO PLANO' if v_mot == 'Sem Glosa' else 'PAGO COM RESSALVA'
+                            else: status = 'GLOSADO / NÃO LOCALIZADO'
+                                
+                            ws.cell(row=r, column=col_lib, value=v_lib)
+                            ws.cell(row=r, column=col_glo, value=v_glo)
+                            ws.cell(row=r, column=col_mot, value=v_mot)
+                            ws.cell(row=r, column=col_sta, value=status)
+                            
+                            ws_resumo.append([aba, str(nome_pac), raw_conv, val_prof, v_lib, diferenca, status, v_mot])
+                            tot_inf += val_prof; tot_lib += v_lib
+
+                dif_total = tot_lib - tot_inf
+                ws_resumo.append(['TOTAIS', '', '', tot_inf, tot_lib, dif_total, '', ''])
+                tot_repasse_geral += tot_lib
+                
+                output_stream = io.BytesIO()
+                wb.save(output_stream)
+                output_stream.seek(0)
+                
+                st.download_button(
+                    label=f"⬇️ Descarregar AUDITADO_{nome_arq}",
+                    data=output_stream,
+                    file_name=f"AUDITADO_{nome_arq}",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+            st.session_state.tot_valida = tot_repasse_geral + st.session_state.tot_glosa
+            st.session_state.tot_repasse = tot_repasse_geral
+            st.rerun()
+
+else:
+    st.info(f"A visualizar secção: {menu}")
