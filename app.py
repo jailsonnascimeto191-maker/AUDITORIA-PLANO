@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
-import datetime
 
-# Configuração da Página
+# ==========================================
+# 1. CONFIGURAÇÃO DA PÁGINA
+# ==========================================
 st.set_page_config(
     page_title="Espaço Saúde - Análise de Produção",
     page_icon="🏥",
@@ -11,14 +12,18 @@ st.set_page_config(
 )
 
 # ==========================================
-# ESTILIZAÇÃO CSS (VISUAL ESPAÇO SAÚDE)
+# 2. ESTILIZAÇÃO CSS (VISUAL PREMIUM)
 # ==========================================
 st.markdown("""
 <style>
+    /* Fundo geral e tipografia */
     .stApp { background-color: #f4f6f5; font-family: 'Segoe UI', sans-serif; }
+    
+    /* Menu Lateral Verde Escuro */
     [data-testid="stSidebar"] { background-color: #0b2e1e !important; color: #ffffff !important; }
     [data-testid="stSidebar"] * { color: #ffffff !important; }
     
+    /* Estilo dos Cartões (KPIs) */
     .metric-card {
         background-color: #ffffff; border: 1px solid #e1e6e3; border-radius: 8px;
         padding: 18px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 100%;
@@ -29,37 +34,43 @@ st.markdown("""
     .metric-value-red { font-size: 26px; font-weight: 800; color: #b32d2d; }
     .metric-subtext { font-size: 12px; color: #708579; margin-top: 4px; }
     
+    /* Botões Padrão Verde */
     .stButton>button {
         background-color: #1b6b3e !important; color: white !important;
         border-radius: 6px !important; font-weight: 600 !important; border: none !important;
     }
     .stButton>button:hover { background-color: #14522f !important; }
+    
+    /* Aviso amarelo suave para área de administração */
+    .admin-warning {
+        background-color: #fdf5e6; color: #855a1f; padding: 12px 16px; 
+        border-radius: 6px; border: 1px solid #f5e1c8; font-size: 14px; margin-bottom: 20px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# BANCO DE DADOS SIMULADO (NUVEM)
+# 3. BANCOS DE DADOS EM MEMÓRIA (INICIAM VAZIOS/MOCK)
 # ==========================================
+# Histórico de Auditoria
 if 'db_auditoria' not in st.session_state:
-    # Gerar dados de teste para visualização imediata do layout
-    dados_teste = {
-        'MES_COMPETENCIA': ['Outubro 2026', 'Outubro 2026', 'Outubro 2026', 'Setembro 2026', 'Outubro 2026'],
-        'PROFISSIONAL': ['Dra. Ana (Fono)', 'Dr. Carlos (Psico)', 'Dra. Ana (Fono)', 'Dra. Ana (Fono)', 'Dra. Beatriz (TO)'],
-        'DATA_ATENDIMENTO': ['10/10/2026', '12/10/2026', '15/10/2026', '05/09/2026', '20/10/2026'],
-        'PACIENTE': ['João Silva', 'Maria Souza', 'Pedro Alves', 'Lucas Costa', 'Fernanda Lima'],
-        'OPERADORA': ['UNIMED', 'CASSI', 'BRADESCO', 'UNIMED', 'FOX SAÚDE'],
-        'VALOR_PRODUCAO': [100.0, 120.0, 100.0, 100.0, 150.0],
-        'VALOR_PAGO': [100.0, 0.0, 80.0, 100.0, 150.0],
-        'VALOR_GLOSA': [0.0, 120.0, 20.0, 0.0, 0.0],
-        'MOTIVO_GLOSA': ['Sem Glosa', 'Falta de Autorização', 'Código Incorreto', 'Sem Glosa', 'Sem Glosa'],
-        'REPASSE_FINAL': [100.0, 0.0, 80.0, 100.0, 150.0]
-    }
-    st.session_state.db_auditoria = pd.DataFrame(dados_teste)
+    st.session_state.db_auditoria = pd.DataFrame(columns=[
+        'MES_COMPETENCIA', 'PROFISSIONAL', 'DATA_ATENDIMENTO',
+        'PACIENTE', 'OPERADORA', 'VALOR_PRODUCAO',
+        'VALOR_PAGO', 'VALOR_GLOSA', 'MOTIVO_GLOSA', 'REPASSE_FINAL'
+    ])
 
-df_db = st.session_state.db_auditoria
+# Cadastros de Valores (Mock para visualização inicial)
+if 'db_valores_fisio' not in st.session_state:
+    st.session_state.db_valores_fisio = pd.DataFrame({
+        "PLANO DE SAÚDE": ["BRADESCO", "UNIMED", "CASSI"],
+        "TEMPO": ["30 MIN", "60 MIN", "30 MIN"],
+        "VALOR PLANO (R$)": [11.86, 23.72, 16.74],
+        "VALOR PROF (R$)": [5.93, 11.86, 8.37]
+    })
 
 # ==========================================
-# BARRA LATERAL (SIDEBAR)
+# 4. BARRA LATERAL (MENU E NAVEGAÇÃO)
 # ==========================================
 with st.sidebar:
     st.markdown("## 🏥 Espaço Saúde")
@@ -68,9 +79,11 @@ with st.sidebar:
     
     menu = st.radio(
         "Navegação",
-        ["📊 Painel", "📁 Enviar arquivos", "⚠️ Glosas"],
+        ["📊 Painel", "📤 Enviar arquivos", "⚠️ Glosas", "⚙️ Cadastros"],
         label_visibility="collapsed"
     )
+
+df_db = st.session_state.db_auditoria
 
 # ==========================================
 # TELA 1: PAINEL PRINCIPAL
@@ -83,148 +96,123 @@ if menu == "📊 Painel":
     with col_usuario:
         st.markdown("<br><p style='text-align: right; font-weight: 600;'>Olá, <b>Jailson</b></p>", unsafe_allow_html=True)
 
-    # Filtros
     st.markdown("### Filtros de Pesquisa")
     f_col1, f_col2, f_col3 = st.columns([1, 2, 1])
     
-    meses_disponiveis = df_db['MES_COMPETENCIA'].unique().tolist()
-    profissionais_disponiveis = ['Todos'] + df_db['PROFISSIONAL'].unique().tolist()
+    meses_disponiveis = df_db['MES_COMPETENCIA'].unique().tolist() if not df_db.empty else ['Sem dados']
+    profissionais_disponiveis = ['Todos'] + df_db['PROFISSIONAL'].unique().tolist() if not df_db.empty else ['Todos']
     
     with f_col1:
-        mes_selecionado = st.selectbox("Competência (Mês/Ano)", meses_disponiveis)
+        mes_selecionado = st.selectbox("Competência", meses_disponiveis)
     with f_col2:
         prof_selecionado = st.selectbox("Profissional", profissionais_disponiveis)
     with f_col3:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("☁️ Salvar Competência na Nuvem", use_container_width=True):
-            st.success(f"Competência de {mes_selecionado} gravada com sucesso!")
+        st.button("☁️ Salvar na Nuvem", use_container_width=True)
 
-    # Lógica de Filtragem
-    df_filtrado = df_db[df_db['MES_COMPETENCIA'] == mes_selecionado]
-    if prof_selecionado != 'Todos':
-        df_filtrado = df_filtrado[df_filtrado['PROFISSIONAL'] == prof_selecionado]
-
-    # Cálculos
-    tot_prod = df_filtrado['VALOR_PRODUCAO'].sum()
-    tot_pago = df_filtrado['VALOR_PAGO'].sum()
-    tot_glosa = df_filtrado['VALOR_GLOSA'].sum()
-    tot_repasse = df_filtrado['REPASSE_FINAL'].sum()
-    qtd_atendimentos = len(df_filtrado)
-
-    # Cartões (KPIs)
-    st.markdown("<br>", unsafe_allow_html=True)
     k1, k2, k3, k4 = st.columns(4)
-    
     with k1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-title">Produção Informada</div>
-            <div class="metric-value">R$ {tot_prod:,.2f}</div>
-            <div class="metric-subtext">{qtd_atendimentos} atendimentos validados</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="metric-card"><div class="metric-title">Produção</div><div class="metric-value">R$ 0,00</div><div class="metric-subtext">0 atendimentos</div></div>', unsafe_allow_html=True)
     with k2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-title">Pago pelos Planos</div>
-            <div class="metric-value">R$ {tot_pago:,.2f}</div>
-            <div class="metric-subtext">Valor faturado com sucesso</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="metric-card"><div class="metric-title">Pago pelos Planos</div><div class="metric-value">R$ 0,00</div><div class="metric-subtext">Valor faturado</div></div>', unsafe_allow_html=True)
     with k3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-title">Total Glosado</div>
-            <div class="metric-value-red">R$ {tot_glosa:,.2f}</div>
-            <div class="metric-subtext">Valores retidos / negados</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="metric-card"><div class="metric-title">Total Glosado</div><div class="metric-value-red">R$ 0,00</div><div class="metric-subtext">Valores retidos</div></div>', unsafe_allow_html=True)
     with k4:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-title">Repasse Definitivo</div>
-            <div class="metric-value-green">R$ {tot_repasse:,.2f}</div>
-            <div class="metric-subtext">Valor final a transferir</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="metric-card"><div class="metric-title">Repasse Definitivo</div><div class="metric-value-green">R$ 0,00</div><div class="metric-subtext">A transferir</div></div>', unsafe_allow_html=True)
 
-    # Tabela e Geração de PDF
     st.markdown("<br>### Detalhamento para o Relatório", unsafe_allow_html=True)
-    
-    df_exibicao = df_filtrado[['DATA_ATENDIMENTO', 'PACIENTE', 'OPERADORA', 'VALOR_PAGO', 'MOTIVO_GLOSA']].copy()
-    df_exibicao.columns = ['Data', 'Paciente', 'Plano', 'Valor Pago (R$)', 'Situação / Glosa']
-    st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
-    
-    col_pdf1, col_pdf2 = st.columns([1, 4])
-    with col_pdf1:
-        # Placeholder para o download do PDF
-        relatorio_csv = df_exibicao.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📄 Gerar Relatório (PDF/Excel)",
-            data=relatorio_csv,
-            file_name=f"Repasse_{prof_selecionado}_{mes_selecionado}.csv",
-            mime="text/csv",
-            type="primary"
-        )
+    st.info("Nenhum arquivo processado. Vá a 'Enviar arquivos' para iniciar.")
 
 # ==========================================
 # TELA 2: ENVIO DE ARQUIVOS
 # ==========================================
-elif menu == "📁 Enviar arquivos":
-    st.title("Envio de Arquivos (Auditoria)")
-    st.caption("Apenas cruze e processe planilhas nesta área.")
+elif menu == "📤 Enviar arquivos":
+    st.title("Casa das Máquinas (Auditoria)")
+    st.caption("Faça o upload dos arquivos para cruzamento. Eles serão descartados após o processamento.")
     
     col_e1, col_e2 = st.columns(2)
     with col_e1:
-        st.markdown("#### 1. Extratos das Operadoras")
+        st.markdown("#### 1. Extratos (Operadoras)")
         st.file_uploader("CASSI (.xlsx)", type=["xlsx"])
         st.file_uploader("Unimed (.xlsx)", type=["xlsx"])
         st.file_uploader("Bradesco (.xlsx)", type=["xlsx"])
     with col_e2:
-        st.markdown("#### 2. Planilhas dos Profissionais")
+        st.markdown("#### 2. Planilhas (Equipe)")
         st.file_uploader("Arraste os espelhamentos (.xlsx)", type=["xlsx"], accept_multiple_files=True)
         
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🚀 Processar Auditoria (Simulação)", type="primary"):
-        st.success("Arquivos cruzados com sucesso! Os dados foram enviados para o Painel e Glosas.")
+    st.button("🚀 Processar Auditoria", type="primary")
 
 # ==========================================
 # TELA 3: CONTROLE DE GLOSAS
 # ==========================================
 elif menu == "⚠️ Glosas":
-    st.title("Controle Cirúrgico de Glosas")
+    st.title("Lupa de Glosas")
     st.caption("Investigue retenções e organize recursos por competência.")
 
-    # Filtros
     f_col1, f_col2 = st.columns(2)
-    meses_disponiveis = df_db['MES_COMPETENCIA'].unique().tolist()
-    profissionais_disponiveis = ['Todos'] + df_db['PROFISSIONAL'].unique().tolist()
-    
     with f_col1:
-        mes_selecionado = st.selectbox("Mês da Glosa", meses_disponiveis)
+        st.selectbox("Mês da Glosa", ['Sem dados'])
     with f_col2:
-        prof_selecionado = st.selectbox("Profissional", profissionais_disponiveis)
+        st.selectbox("Profissional", ['Todos'])
 
-    # Filtrar apenas o que tem glosa
-    df_glosas = df_db[(df_db['MES_COMPETENCIA'] == mes_selecionado) & (df_db['VALOR_GLOSA'] > 0)]
-    if prof_selecionado != 'Todos':
-        df_glosas = df_glosas[df_glosas['PROFISSIONAL'] == prof_selecionado]
+    st.markdown('<div class="metric-card" style="width: 300px; margin-top: 15px; margin-bottom: 25px;"><div class="metric-title">Dinheiro Retido</div><div class="metric-value-red">R$ 0,00</div><div class="metric-subtext">0 atendimentos glosados</div></div>', unsafe_allow_html=True)
+    st.info("Nenhuma glosa detectada no momento.")
 
-    # Resumo
-    tot_glosa_tela = df_glosas['VALOR_GLOSA'].sum()
-    st.markdown(f"""
-    <div class="metric-card" style="width: 300px; margin-top: 15px; margin-bottom: 25px;">
-        <div class="metric-title">Dinheiro Retido</div>
-        <div class="metric-value-red">R$ {tot_glosa_tela:,.2f}</div>
-        <div class="metric-subtext">{len(df_glosas)} atendimentos glosados</div>
-    </div>
-    """, unsafe_allow_html=True)
+# ==========================================
+# TELA 4: CADASTROS (CONFIGURAÇÕES GERAIS)
+# ==========================================
+elif menu == "⚙️ Cadastros":
+    st.title("Cadastros")
+    st.markdown('<div class="admin-warning">Somente administradores alteram cadastros, valores e regras. As suas mudanças aqui refletem-se em toda a auditoria.</div>', unsafe_allow_html=True)
 
-    # Tabela de Glosas
-    st.markdown("### Detalhamento das Retenções")
-    if not df_glosas.empty:
-        df_exib_glosas = df_glosas[['DATA_ATENDIMENTO', 'PACIENTE', 'OPERADORA', 'VALOR_PRODUCAO', 'VALOR_GLOSA', 'MOTIVO_GLOSA']].copy()
-        df_exib_glosas.columns = ['Data', 'Paciente', 'Operadora', 'Valor Original', 'Valor Retido', 'Motivo da Glosa']
-        st.dataframe(df_exib_glosas, use_container_width=True, hide_index=True)
-    else:
-        st.success(f"Nenhuma glosa encontrada para {prof_selecionado} no mês de {mes_selecionado}!")
+    # Criação das Abas
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Tabela de valores", "Planos", "Profissionais", "Feriados", "Códigos de glosa", "Regras do repasse"
+    ])
+
+    # ABA 1: TABELA DE VALORES
+    with tab1:
+        st.markdown("Tabela no mesmo formato da planilha da clínica. O repasse usa o **valor do profissional** desta tabela.")
+        
+        # Botões de Importar/Exportar
+        col_btn1, col_btn2, _ = st.columns([2, 2, 8])
+        with col_btn1:
+            st.button("📥 Importar planilha")
+        with col_btn2:
+            st.button("📤 Exportar planilha")
+            
+        st.markdown("<hr style='margin-top: 5px; margin-bottom: 15px;'>", unsafe_allow_html=True)
+        
+        # Pílulas/Seleção de Especialidade
+        especialidade = st.radio(
+            "Selecione a Especialidade:",
+            ["Fisioterapia", "Fonoaudiologia", "Nutrição", "Psicologia", "Psicomotricidade", "Psicopedagogia"],
+            horizontal=True
+        )
+        
+        st.markdown(f"**TABELA DE VALORES - {especialidade.upper()} | CLÍNICA ESPAÇO SAÚDE**")
+        
+        # Editor Interativo de Dados (Data Grid)
+        # O st.data_editor permite adicionar, remover e editar linhas como no Excel
+        novo_df = st.data_editor(
+            st.session_state.db_valores_fisio,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "PLANO DE SAÚDE": st.column_config.SelectboxColumn("PLANO DE SAÚDE", options=["BRADESCO", "UNIMED", "CASSI", "FOX", "MEDSERVICE"], required=True),
+                "TEMPO": st.column_config.SelectboxColumn("TEMPO", options=["30 MIN", "45 MIN", "60 MIN"], required=True),
+                "VALOR PLANO (R$)": st.column_config.NumberColumn("VALOR PLANO (R$)", format="%.2f"),
+                "VALOR PROF (R$)": st.column_config.NumberColumn("VALOR PROF (R$)", format="%.2f")
+            }
+        )
+
+    # ABA 2: PLANOS
+    with tab2:
+        st.subheader("Gestão de Convênios")
+        st.info("Aqui você poderá adicionar novos planos de saúde ou remover operadoras desativadas.")
+
+    # ABA 3: PROFISSIONAIS
+    with tab3:
+        st.subheader("Equipe Clínica")
+        st.info("Aqui você associará o nome do profissional à sua respectiva especialidade e conselho.")
