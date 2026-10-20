@@ -240,7 +240,7 @@ elif menu == "📥 Enviar arquivos":
                     st.session_state.db_glosas = pd.concat(lista_glosas, ignore_index=True)
                     st.success(f"Auditoria concluída! {len(st.session_state.db_glosas)} registo(s) enviado(s) para a Lupa de Glosas.")
                 else:
-                    st.info("Ficheiros processados! Abra a aba 'Glosas' para visualizar e exportar o relatório.")
+                    st.warning("O ficheiro foi lido, mas nenhuma linha de glosa foi identificada automaticamente.")
 
                 for err in erros:
                     st.error(f"Aviso ao ler {err}")
@@ -249,7 +249,11 @@ elif menu == "📥 Enviar arquivos":
         if st.button("🗑️ Limpar Ficheiros", use_container_width=True):
             st.session_state.arquivos_extratos_enviados = []
             st.session_state.arquivos_equipe_enviados = []
-            st.session_state.db_glosas = pd.DataFrame(columns=motor_extracao.COLUNAS_PADRAO_GLOSAS)
+            st.session_state.db_glosas = pd.DataFrame(columns=[
+                "Nome do paciente", "Código", "Procedimento",
+                "Valor informado", "Valor recebido", "Valor da glosa",
+                "Código da glosa", "Motivo da glosa"
+            ])
             st.rerun()
 
 # ==========================================
@@ -262,60 +266,51 @@ elif menu == "🔍 Glosas":
     with st.expander("ℹ️ Como funciona a Lupa de Glosas"):
         st.markdown("""
         * *O que faz:* Isola automaticamente os atendimentos onde o valor recebido foi menor que o valor informado.
-        * *Como usar:* Analise a tabela abaixo. Quando o relatório estiver validado, utilize os botões de exportação para gerar o Excel ou PDF.
+        * *Como usar:* Envie os demonstrativos na aba 'Enviar arquivos', clique em 'Processar Auditoria Completa' e volte aqui para validar e exportar o relatório.
         """)
 
     st.markdown("### Relatório Detalhado de Glosas")
 
-    # Se já houver demonstrativos processados na Casa das Máquinas, usa os dados reais; caso contrário, exibe o modelo de demonstração
-    if not st.session_state.db_glosas.empty:
-        df_glosas = st.session_state.db_glosas
-        st.success(f"A exibir {len(df_glosas)} registo(s) extraído(s) dos demonstrativos enviados.")
+    df_glosas = st.session_state.db_glosas
+
+    if df_glosas.empty:
+        st.markdown('<div class="metric-card" style="width: 300px; margin-top: 10px; margin-bottom: 20px;"><div class="metric-title">Total Glosado no Relatório</div><div class="metric-value-red">R$ 0,00</div></div>', unsafe_allow_html=True)
+        st.info("Nenhum demonstrativo processado no momento. Vá à aba 'Enviar arquivos', faça o upload do demonstrativo do plano e clique em 'Processar Auditoria Completa'.")
     else:
-        st.info("A exibir dados de exemplo para demonstração. Envie os demonstrativos reais na aba 'Enviar arquivos' para substituir esta tabela.")
-        dados_mock_glosas = {
-            "Nome do paciente": ["João Silva", "Maria Oliveira", "Carlos Souza"],
-            "Código": ["10101012", "20101015", "10101012"],
-            "Procedimento": ["Sessão de Psicologia", "Sessão de Fisioterapia", "Sessão de Psicologia"],
-            "Valor informado": [93.64, 46.82, 93.64],
-            "Valor recebido": [0.00, 0.00, 40.00],
-            "Valor da glosa": [93.64, 46.82, 53.64],
-            "Código da glosa": ["1001", "1005", "1001"],
-            "Motivo da glosa": ["Falta de autorização", "Procedimento incompatível", "Pagamento parcial"]
-        }
-        df_glosas = pd.DataFrame(dados_mock_glosas)
+        st.success(f"A exibir {len(df_glosas)} registo(s) extraído(s) dos demonstrativos enviados.")
 
-    total_glosado = df_glosas["Valor da glosa"].sum() if "Valor da glosa" in df_glosas.columns else 0.0
-    st.markdown(f'<div class="metric-card" style="width: 300px; margin-top: 10px; margin-bottom: 20px;"><div class="metric-title">Total Glosado no Relatório</div><div class="metric-value-red">R$ {total_glosado:,.2f}</div></div>', unsafe_allow_html=True)
+        total_glosado = df_glosas["Valor da glosa"].sum() if "Valor da glosa" in df_glosas.columns else 0.0
+        st.markdown(f'<div class="metric-card" style="width: 300px; margin-top: 10px; margin-bottom: 20px;"><div class="metric-title">Total Glosado no Relatório</div><div class="metric-value-red">R$ {total_glosado:,.2f}</div></div>', unsafe_allow_html=True)
 
-    df_glosas_editado = st.data_editor(
-        df_glosas,
-        num_rows="dynamic",
-        use_container_width=True,
-        hide_index=True
-    )
-
-    col_btn1, col_btn2, _ = st.columns([2, 2, 6])
-    with col_btn1:
-        excel_data = motor_auditoria.gerar_excel_glosas(df_glosas_editado)
-        st.download_button(
-            label="📥 Baixar Relatório (Excel)",
-            data=excel_data,
-            file_name="Relatorio_Glosas_Chefia.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
+        df_glosas_editado = st.data_editor(
+            df_glosas,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True
         )
-    with col_btn2:
-        pdf_data = motor_auditoria.gerar_pdf_glosas(df_glosas_editado)
-        if pdf_data:
+        st.session_state.db_glosas = df_glosas_editado
+
+        col_btn1, col_btn2, _ = st.columns([2, 2, 6])
+        with col_btn1:
+            excel_data = motor_auditoria.gerar_excel_glosas(df_glosas_editado)
             st.download_button(
-                label="📄 Baixar Relatório (PDF)",
-                data=pdf_data,
-                file_name="Relatorio_Glosas_Chefia.pdf",
-                mime="application/pdf"
+                label="📥 Baixar Relatório (Excel)",
+                data=excel_data,
+                file_name="Relatorio_Glosas_Chefia.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
             )
-        else:
-            st.warning("⚠️ Adicione 'fpdf' no requirements.txt para ativar os PDFs.")
+        with col_btn2:
+            pdf_data = motor_auditoria.gerar_pdf_glosas(df_glosas_editado)
+            if pdf_data:
+                st.download_button(
+                    label="📄 Baixar Relatório (PDF)",
+                    data=pdf_data,
+                    file_name="Relatorio_Glosas_Chefia.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.warning("⚠️ Adicione 'fpdf' no requirements.txt para ativar os PDFs.")
 
 # ==========================================
 # TELA 4: CADASTROS (CONFIGURAÇÕES)
@@ -338,67 +333,4 @@ elif menu == "⚙️ Cadastros":
 
         col_btn1, col_btn2, _ = st.columns([3, 3, 6])
         with col_btn1:
-            arquivo_importado = st.file_uploader("📥 Atualizar Valores por Excel", key="up_valores", label_visibility="visible")
-            if arquivo_importado is not None:
-                dicionario_abas, erro = motor_valores.processar_tabela_valores_por_abas(arquivo_importado)
-                if erro:
-                    st.error(f"Erro ao ler arquivo: {erro}")
-                else:
-                    for esp, df_novo in dicionario_abas.items():
-                        st.session_state.db_valores_por_especialidade[esp] = df_novo
-                    st.success("Valores atualizados com sucesso a partir do Excel!")
-        with col_btn2:
-            pass
-
-        st.markdown("<hr style='margin-top: 5px; margin-bottom: 15px;'>", unsafe_allow_html=True)
-
-        especialidade_selecionada = st.radio(
-            "Selecione a Especialidade:",
-            especialidades_fixas,
-            horizontal=True
-        )
-
-        st.markdown(f"*TABELA DE VALORES - {especialidade_selecionada} | CLÍNICA ESPAÇO SAÚDE*")
-
-        if especialidade_selecionada not in st.session_state.db_valores_por_especialidade:
-            st.session_state.db_valores_por_especialidade[especialidade_selecionada] = pd.DataFrame(
-                columns=["PLANO DE SAÚDE", "TEMPO", "VALOR PLANO (R$)", "VALOR PROF (R$)"]
-            )
-
-        df_atual = st.session_state.db_valores_por_especialidade[especialidade_selecionada]
-
-        df_editado = st.data_editor(
-            df_atual,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "PLANO DE SAÚDE": st.column_config.SelectboxColumn(
-                    "PLANO DE SAÚDE",
-                    options=["BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"],
-                    required=True
-                ),
-                "TEMPO": st.column_config.SelectboxColumn(
-                    "TEMPO",
-                    options=["30 MIN", "45 MIN", "60 MIN"],
-                    required=True
-                ),
-                "VALOR PLANO (R$)": st.column_config.NumberColumn(
-                    "VALOR PLANO (R$)",
-                    format="%.2f"
-                ),
-                "VALOR PROF (R$)": st.column_config.NumberColumn(
-                    "VALOR PROF (R$)",
-                    format="%.2f"
-                )
-            }
-        )
-
-        st.session_state.db_valores_por_especialidade[especialidade_selecionada] = df_editado
-
-    with tab2:
-        st.subheader("Gestão de Convênios")
-        st.info("Adicione novos planos ou remova operadoras.")
-
-    with tab3:
-        st.subheader("Equipe Clínica")
-        st.info("Associe profissionais às respetivas especialidades.")
+            arquivo_importado = st.file_uploader("📥 Atualizar Valores por
