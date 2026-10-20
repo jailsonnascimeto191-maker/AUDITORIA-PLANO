@@ -184,15 +184,17 @@ elif menu == "📤 Enviar arquivos":
         st.caption("Espelhamentos de atendimento dos profissionais.")
         
         arquivo_eq = st.file_uploader(
-            "Enviar espelhamento da equipa", 
+            "Arraste os espelhamentos dos profissionais", 
             key="uploader_equipe",
-            help="Formatos de espelhamento aceitos para a equipa: Excel (.xlsx, .xls), Word (.docx, .doc), PDF (.pdf) ou CSV (.csv)."
+            accept_multiple_files=True,
+            help="Formatos aceitos para equipa: Excel (.xlsx, .xls), Word (.docx, .doc), PDF (.pdf) ou CSV (.csv)."
         )
         
-        if arquivo_eq is not None:
-            if arquivo_eq.name not in st.session_state.arquivos_equipe_enviados:
-                st.session_state.arquivos_equipe_enviados.append(arquivo_eq.name)
-            st.success(f"Espelhamento carregado: **{arquivo_eq.name}**")
+        if arquivo_eq:
+            for arq in arquivo_eq:
+                if arq.name not in st.session_state.arquivos_equipe_enviados:
+                    st.session_state.arquivos_equipe_enviados.append(arq.name)
+            st.success(f"{len(arquivo_eq)} Espelhamento(s) carregado(s) com sucesso.")
             
         if st.session_state.arquivos_equipe_enviados:
             st.markdown("<p style='font-size: 13px; font-weight: 600; margin-top: 10px;'>Espelhamentos anexados:</p>", unsafe_allow_html=True)
@@ -211,22 +213,54 @@ elif menu == "📤 Enviar arquivos":
 # ==========================================
 elif menu == "⚠️ Glosas":
     st.title("Lupa de Glosas")
-    st.caption("Investigue retenções e organize recursos por competência.")
+    st.caption("Investigue retenções e gere relatórios detalhados para a chefia.")
 
     with st.expander("ℹ️ Como funciona a Lupa de Glosas"):
         st.markdown("""
-        * **O que faz:** Identifica, cataloga e monitoriza os valores retidos ou recusados pelas operadoras de saúde.
-        * **Como usar:** Filtre por mês ou profissional para auditar os motivos das retenções e preparar os recursos de contestação correspondentes.
+        * **O que faz:** Isola automaticamente os atendimentos onde o valor recebido foi menor que o valor informado, detalhando o paciente, procedimento e os motivos da glosa.
+        * **Como usar:** Analise a tabela abaixo. Quando o relatório estiver validado, utilize os botões de exportação para descarregar o documento em Excel ou PDF e enviá-lo ao seu superior.
         """)
 
-    f_col1, f_col2 = st.columns(2)
-    with f_col1:
-        st.selectbox("Mês da Glosa", ['Sem dados'])
-    with f_col2:
-        st.selectbox("Profissional", ['Todos'])
-
-    st.markdown('<div class="metric-card" style="width: 300px; margin-top: 15px; margin-bottom: 25px;"><div class="metric-title">Dinheiro Retido</div><div class="metric-value-red">R$ 0,00</div><div class="metric-subtext">0 atendimentos glosados</div></div>', unsafe_allow_html=True)
-    st.info("Nenhuma glosa detectada no momento.")
+    st.markdown("### Relatório Detalhado de Glosas")
+    
+    # Gerar dados de exemplo temporários para a UI
+    dados_mock_glosas = {
+        "Nome do paciente": ["João Silva", "Maria Oliveira", "Carlos Souza"],
+        "Código": ["10101012", "20101015", "10101012"],
+        "Procedimento": ["Sessão de Psicologia", "Sessão de Fisioterapia", "Sessão de Psicologia"],
+        "Valor informado": [93.64, 46.82, 93.64],
+        "Valor recebido": [0.00, 0.00, 40.00],
+        "Valor da glosa": [93.64, 46.82, 53.64],
+        "Código da glosa": ["1001", "1005", "1001"],
+        "Motivo da glosa": ["Falta de autorização", "Procedimento incompatível", "Pagamento parcial"]
+    }
+    df_glosas = pd.DataFrame(dados_mock_glosas)
+    
+    st.dataframe(df_glosas, use_container_width=True, hide_index=True)
+    
+    col_btn1, col_btn2, _ = st.columns([2, 2, 6])
+    
+    with col_btn1:
+        excel_data = motor_auditoria.gerar_excel_glosas(df_glosas)
+        st.download_button(
+            label="📊 Baixar Relatório (Excel)",
+            data=excel_data,
+            file_name="Relatorio_Glosas_Chefia.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
+        
+    with col_btn2:
+        pdf_data = motor_auditoria.gerar_pdf_glosas(df_glosas)
+        if pdf_data:
+            st.download_button(
+                label="📄 Baixar Relatório (PDF)",
+                data=pdf_data,
+                file_name="Relatorio_Glosas_Chefia.pdf",
+                mime="application/pdf"
+            )
+        else:
+            st.warning("⚠️ Adicione 'fpdf' no requirements.txt para ativar os PDFs.")
 
 # ==========================================
 # TELA 4: CADASTROS (CONFIGURAÇÕES)
