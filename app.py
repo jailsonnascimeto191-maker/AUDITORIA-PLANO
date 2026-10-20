@@ -100,7 +100,7 @@ if menu == "📊 Painel":
 
     with st.expander("ℹ️ Como funciona o Painel de Repasses"):
         st.markdown("""
-        * **O que faz:** Apresenta o resumo financeiro consolidado da clínica com base nos cruzamentos efetuados.[cite: 1]
+        * **O que faz:** Apresenta o resumo financeiro consolidado da clínica com base nos cruzamentos efetuados[cite: 1].
         * **Como usar:** Selecione a competência (mês) e o profissional desejado nos filtros acima para visualizar os indicadores de produção, valores pagos pelos planos, montantes glosados e o valor definitivo do repasse a transferir.
         """)
 
@@ -237,4 +237,33 @@ elif menu == "⚙️ Cadastros":
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "PLANO DE SAÚDE": st.column_config.
+                "PLANO DE SAÚDE": st.column_config.SelectboxColumn(
+                    "PLANO DE SAÚDE", 
+                    options=["BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"], 
+                    required=True
+                ),
+                "TEMPO": st.column_config.SelectboxColumn(
+                    "TEMPO", 
+                    options=["30 MIN", "45 MIN", "60 MIN"], 
+                    required=True
+                ),
+                "VALOR PLANO (R$)": st.column_config.NumberColumn(
+                    "VALOR PLANO (R$)", 
+                    format="%.2f"
+                ),
+                "VALOR PROF (R$)": st.column_config.NumberColumn(
+                    "VALOR PROF (R$)", 
+                    format="%.2f"
+                )
+            }
+        )
+        
+        st.session_state.db_valores_por_especialidade[especialidade_selecionada] = df_editado
+
+    with tab2:
+        st.subheader("Gestão de Convênios")
+        st.info("Adicione novos planos ou remova operadoras.")
+
+    with tab3:
+        st.subheader("Equipe Clínica")
+        st.info("Associe profissionais às respetivas especialidades.")
