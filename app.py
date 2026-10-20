@@ -55,9 +55,8 @@ if 'db_auditoria' not in st.session_state:
 
 if 'db_glosas' not in st.session_state:
     st.session_state.db_glosas = pd.DataFrame(columns=[
-        "Nome do paciente", "Código", "Procedimento",
-        "Valor informado", "Valor recebido", "Valor da glosa",
-        "Código da glosa", "Motivo da glosa"
+        "Data do evento", "Nome do paciente", "Código", "Procedimento",
+        "Valor informado", "Valor pago", "Valor da glosa", "Motivo da glosa"
     ])
 
 especialidades_fixas = [
@@ -136,7 +135,7 @@ if menu == "📊 Painel":
     df_g = st.session_state.db_glosas
     total_glosa_painel = df_g["Valor da glosa"].sum() if not df_g.empty else 0.0
     total_inf_painel = df_g["Valor informado"].sum() if not df_g.empty else 0.0
-    total_pago_painel = df_g["Valor recebido"].sum() if not df_g.empty else 0.0
+    total_pago_painel = df_g["Valor pago"].sum() if not df_g.empty else 0.0
 
     k1, k2, k3, k4 = st.columns(4)
     with k1:
@@ -179,7 +178,7 @@ elif menu == "📥 Enviar arquivos":
 
     with st.expander("ℹ️ Como funciona a Casa das Máquinas"):
         st.markdown("""
-        * *O que faz:* Processa e cruza automaticamente os extratos das operadoras com os espelhamentos e relatórios de glosa.
+        * *O que faz:* Processa e cruza automaticamente os extratos das operadoras com os relatórios de glosa.
         * *Como usar:* Selecione o plano ou identificação automática, envie o documento do plano e clique em Processar Auditoria Completa.
         """)
 
@@ -284,9 +283,8 @@ elif menu == "📥 Enviar arquivos":
             st.session_state.arquivos_extratos_enviados = []
             st.session_state.arquivos_equipe_enviados = []
             st.session_state.db_glosas = pd.DataFrame(columns=[
-                "Nome do paciente", "Código", "Procedimento",
-                "Valor informado", "Valor recebido", "Valor da glosa",
-                "Código da glosa", "Motivo da glosa"
+                "Data do evento", "Nome do paciente", "Código", "Procedimento",
+                "Valor informado", "Valor pago", "Valor da glosa", "Motivo da glosa"
             ])
             st.rerun()
 
