@@ -56,7 +56,6 @@ if 'db_auditoria' not in st.session_state:
         'VALOR_PAGO', 'VALOR_GLOSA', 'MOTIVO_GLOSA', 'REPASSE_FINAL'
     ])
 
-# Especialidades fixas da clínica
 especialidades_fixas = [
     "PSICOLOGIA", "FISIOTERAPIA", "FONOAUDIOLOGIA", 
     "NUTRIÇÃO", "PSICOMOTRICIDADE", "PSICOPEDAGOGIA"
@@ -99,6 +98,12 @@ if menu == "📊 Painel":
     with col_usuario:
         st.markdown("<br><p style='text-align: right; font-weight: 600;'>Olá, <b>Jailson</b></p>", unsafe_allow_html=True)
 
+    with st.expander("ℹ️ Como funciona o Painel de Repasses"):
+        st.markdown("""
+        * **O que faz:** Apresenta o resumo financeiro consolidado da clínica com base nos cruzamentos efetuados.[cite: 1]
+        * **Como usar:** Selecione a competência (mês) e o profissional desejado nos filtros acima para visualizar os indicadores de produção, valores pagos pelos planos, montantes glosados e o valor definitivo do repasse a transferir.
+        """)
+
     st.markdown("### Filtros de Pesquisa")
     f_col1, f_col2, f_col3 = st.columns([1, 2, 1])
     
@@ -134,6 +139,12 @@ elif menu == "📤 Enviar arquivos":
     st.title("Casa das Máquinas (Auditoria)")
     st.caption("Faça o upload dos arquivos para cruzamento. Os ficheiros são descartados após o processamento por segurança.")
     
+    with st.expander("ℹ️ Como funciona a Casa das Máquinas"):
+        st.markdown("""
+        * **O que faz:** Processa e cruza automaticamente os extratos financeiros das operadoras com os espelhamentos de atendimento da equipa clínica.
+        * **Como usar:** Arraste os ficheiros correspondentes de cada convênio (Cassi, Unimed, Bradesco) e as planilhas dos profissionais, depois clique em 'Processar Auditoria' para gerar os cálculos.
+        """)
+    
     col_e1, col_e2 = st.columns(2)
     with col_e1:
         st.markdown("#### 1. Extratos (Operadoras)")
@@ -154,6 +165,12 @@ elif menu == "📤 Enviar arquivos":
 elif menu == "⚠️ Glosas":
     st.title("Lupa de Glosas")
     st.caption("Investigue retenções e organize recursos por competência.")
+
+    with st.expander("ℹ️ Como funciona a Lupa de Glosas"):
+        st.markdown("""
+        * **O que faz:** Identifica, cataloga e monitoriza os valores retidos ou recusados pelas operadoras de saúde.
+        * **Como usar:** Filtre por mês ou profissional para auditar os motivos das retenções e preparar os recursos de contestação correspondentes.
+        """)
 
     f_col1, f_col2 = st.columns(2)
     with f_col1:
@@ -178,10 +195,15 @@ elif menu == "⚙️ Cadastros":
     with tab1:
         st.markdown("Tabela no mesmo formato da planilha da clínica. O repasse usa o **valor do profissional** desta tabela.")
         
+        with st.expander("ℹ️ Como gerir a Tabela de Valores"):
+            st.markdown("""
+            * **O que faz:** Define os valores cobrados aos planos de saúde e os respetivos repasses devidos aos profissionais por tempo de atendimento (30 min, 60 min, etc.).
+            * **Como usar:** Selecione a especialidade desejada e utilize a grelha abaixo para editar diretamente os valores, ou faça o upload de um ficheiro Excel na barra lateral para atualizar automaticamente todas as tabelas em massa.
+            """)
+        
         col_btn1, col_btn2, _ = st.columns([3, 3, 6])
         
         with col_btn1:
-            # Chama o motor especializado em valores
             arquivo_importado = st.file_uploader("📥 Atualizar Valores por Excel (.xlsx)", type=["xlsx", "xls"], label_visibility="collapsed")
             if arquivo_importado is not None:
                 dicionario_abas, erro = motor_valores.processar_tabela_valores_por_abas(arquivo_importado)
@@ -197,7 +219,6 @@ elif menu == "⚙️ Cadastros":
 
         st.markdown("<hr style='margin-top: 5px; margin-bottom: 15px;'>", unsafe_allow_html=True)
         
-        # Especialidades sempre fixas e visíveis
         especialidade_selecionada = st.radio(
             "Selecione a Especialidade:",
             especialidades_fixas,
@@ -216,19 +237,4 @@ elif menu == "⚙️ Cadastros":
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "PLANO DE SAÚDE": st.column_config.SelectboxColumn("PLANO DE SAÚDE", options=["BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"], required=True),
-                "TEMPO": st.column_config.SelectboxColumn("TEMPO", options=["30 MIN", "45 MIN", "60 MIN"], required=True),
-                "VALOR PLANO (R$)": st.column_config.NumberColumn("VALOR PLANO (R$)", format="%.2f"),
-                "VALOR PROF (R$)": st.column_config.NumberColumn("VALOR PROF (R$)", format="%.2f")
-            }
-        )
-        
-        st.session_state.db_valores_por_especialidade[especialidade_selecionada] = df_editado
-
-    with tab2:
-        st.subheader("Gestão de Convênios")
-        st.info("Adicione novos planos ou remova operadoras.")
-
-    with tab3:
-        st.subheader("Equipe Clínica")
-        st.info("Associe profissionais às respetivas especialidades.")
+                "PLANO DE SAÚDE": st.column_config.
