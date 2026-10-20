@@ -162,12 +162,10 @@ elif menu == "📤 Enviar arquivos":
         
         arquivo_demonstrativo = st.file_uploader(
             f"Enviar Demonstrativo ({plano_selecionado})", 
-            type=["xlsx", "xls", "pdf", "xml", "docx", "doc", "html", "htm"],
             key="uploader_demonstrativo"
         )
         
         if arquivo_demonstrativo is not None:
-            # Regista o ficheiro na lista da sessão
             info_arquivo = {"plano": plano_selecionado, "nome": arquivo_demonstrativo.name}
             if info_arquivo not in st.session_state.arquivos_extratos_enviados:
                 st.session_state.arquivos_extratos_enviados.append(info_arquivo)
@@ -184,7 +182,6 @@ elif menu == "📤 Enviar arquivos":
         
         arquivos_equipe = st.file_uploader(
             "Arraste os espelhamentos dos profissionais", 
-            type=["xlsx", "xls", "csv"], 
             accept_multiple_files=True,
             help="Formatos aceitos para equipa: Excel (.xlsx, .xls) ou CSV (.csv)."
         )
@@ -245,7 +242,7 @@ elif menu == "⚙️ Cadastros":
         col_btn1, col_btn2, _ = st.columns([3, 3, 6])
         
         with col_btn1:
-            arquivo_importado = st.file_uploader("📥 Atualizar Valores por Excel (.xlsx)", type=["xlsx", "xls"], label_visibility="collapsed")
+            arquivo_importado = st.file_uploader("📥 Atualizar Valores por Excel", key="up_valores", label_visibility="collapsed")
             if arquivo_importado is not None:
                 dicionario_abas, erro = motor_valores.processar_tabela_valores_por_abas(arquivo_importado)
                 if erro:
