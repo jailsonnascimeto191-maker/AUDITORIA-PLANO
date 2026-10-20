@@ -265,7 +265,7 @@ def _score_campo(campo, h_norm, perfil):
     compat = 0.3 + 0.7 * frac            # nome "certo" com conteúdo errado vale pouco
     score = nome * compat
     if tipo in ("data", "codigo", "nome"):
-        score += 50.0 * frac             # conteúdo sozinho consegue identificar
+        score += 50.0 * frac               # conteúdo sozinho consegue identificar
     elif tipo == "texto":
         score += 25.0 * frac
     return score
@@ -415,16 +415,18 @@ def _montar_saida(df, mapa):
     s = col("Valor pago")
     out["Valor pago"] = s.apply(limpar_valor_monetario) if s is not None else 0.0
 
-    calculada = (out["Valor informado"] - out["Valor pago"]).clip(lower=0.0)
-    s = col("Valor da glosa")
-    if s is not None:
-        g = s.apply(limpar_valor_monetario).abs()
-        # Se a coluna de glosa veio vazia/zero mas informado > pago, usa a diferença
-        if "Valor pago" in mapa and "Valor informado" in mapa:
-            g = g.where(g > 0, calculada)
+    # CORREÇÃO: Verificar se as colunas de pagamento ou glosa existem de forma real no mapeamento
+    tem_coluna_pago = "Valor pago" in mapa and mapa["Valor pago"] in df.columns
+    tem_coluna_glosa = "Valor da glosa" in mapa and mapa["Valor da glosa"] in df.columns
+
+    if tem_coluna_glosa:
+        g = col("Valor da glosa").apply(limpar_valor_monetario).abs()
         out["Valor da glosa"] = g
-    else:
+    elif tem_coluna_pago:
+        calculada = (out["Valor informado"] - out["Valor pago"]).clip(lower=0.0)
         out["Valor da glosa"] = calculada.round(2)
+    else:
+        out["Valor da glosa"] = 0.0
 
     s = col("Motivo da glosa")
     out["Motivo da glosa"] = s.apply(_txt) if s is not None else ""
