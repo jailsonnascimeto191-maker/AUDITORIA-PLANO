@@ -10,7 +10,6 @@ except ImportError:
     FPDF = None
 
 def normalizar_nome(nome):
-    """Remove acentos, converte para maiúsculas e remove espaços extras para padronização."""
     if pd.isnull(nome) or not isinstance(nome, str):
         return ""
     nome = str(nome).upper()
@@ -19,13 +18,11 @@ def normalizar_nome(nome):
     return re.sub(r'\s+', ' ', nome).strip()
 
 def simplificar_fonetica(nome):
-    """Simplifica letras duplicadas para comparação fonética."""
     if not nome:
         return ""
     return " ".join([re.sub(r'(.)\1+', r'\1', p) for p in nome.split()])
 
 def descobrir_especialidade(descricao):
-    """Identifica a especialidade clínica a partir da descrição do procedimento."""
     desc = str(descricao).upper()
     if 'PSICOM' in desc: return 'PSICOMOTRICIDADE'
     if 'PSICOPED' in desc: return 'PSICOPEDAGOGIA'
@@ -37,7 +34,6 @@ def descobrir_especialidade(descricao):
     return 'GERAL'
 
 def extrair_datas_lista(data_str):
-    """Extrai listas de datas e contabiliza sessões em células agrupadas."""
     if pd.isnull(data_str):
         return [], 1.0
     texto = str(data_str)
@@ -56,7 +52,6 @@ def extrair_datas_lista(data_str):
     return [], max(1.0, float(virgulas + 1))
 
 def encontrar_melhor_nome(nome_planilha, lista_nomes_piscina):
-    """Encontra a melhor correspondência de nome entre a planilha da equipa e o extrato do plano."""
     n1 = normalizar_nome(nome_planilha)
     if not n1:
         return ""
@@ -94,7 +89,6 @@ def encontrar_melhor_nome(nome_planilha, lista_nomes_piscina):
     return melhor_match if maior_sim >= 0.65 else n1
 
 def comparar_nomes(nome1, nome2, limite_similaridade=0.85):
-    """Compara dois nomes usando difflib para verificar similaridade direta."""
     n1 = normalizar_nome(nome1)
     n2 = normalizar_nome(nome2)
     if n1 == n2:
@@ -103,7 +97,6 @@ def comparar_nomes(nome1, nome2, limite_similaridade=0.85):
     return similaridade >= limite_similaridade
 
 def extrair_nome_operadora(texto):
-    """Identifica o nome da operadora de saúde a partir do texto ou nome do ficheiro."""
     t = str(texto).upper()
     if 'BRAD' in t: return 'BRADESCO'
     if 'FOX' in t: return 'FOX'
@@ -114,29 +107,26 @@ def extrair_nome_operadora(texto):
     return 'INDEFINIDO'
 
 def gerar_excel_glosas(df):
-    """Gera um ficheiro Excel (.xlsx) a partir do DataFrame de Glosas."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Relatorio_Glosas')
     return output.getvalue()
 
 def gerar_pdf_glosas(df):
-    """Gera um ficheiro PDF a partir do DataFrame de Glosas formatado para a chefia."""
     if FPDF is None:
         return None
     try:
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
 
-        # Título
         pdf.set_font("Arial", 'B', 14)
         pdf.cell(0, 10, txt="Relatório Detalhado de Glosas - Auditoria", ln=True, align='C')
         pdf.ln(5)
 
         colunas = df.columns.tolist()
-        larguras = [35, 20, 50, 25, 25, 25, 25, 65]
+        # Larguras ajustadas para as 8 colunas (Total: ~277mm para A4 Paisagem)
+        larguras = [25, 45, 20, 50, 24, 24, 24, 65]
 
-        # Cabeçalho da Tabela
         pdf.set_font("Arial", 'B', 9)
         for i, col in enumerate(colunas):
             larg = larguras[i] if i < len(larguras) else 30
@@ -144,14 +134,13 @@ def gerar_pdf_glosas(df):
             pdf.cell(larg, 8, col_txt, border=1, align='C')
         pdf.ln()
 
-        # Linhas da Tabela
         pdf.set_font("Arial", '', 8)
         for index, row in df.iterrows():
             for i, col in enumerate(colunas):
                 larg = larguras[i] if i < len(larguras) else 30
                 valor = row[col]
                 if isinstance(valor, (float, int)):
-                    if 'Valor' in col and 'Código' not in col:
+                    if 'Valor' in col:
                         texto = f"R$ {valor:.2f}"
                     else:
                         texto = str(valor)
