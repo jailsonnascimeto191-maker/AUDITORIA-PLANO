@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
-import motor  # Importa o motor nos bastidores
+import motor_valores
+import motor_extracao
+import motor_auditoria
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -54,7 +56,7 @@ if 'db_auditoria' not in st.session_state:
         'VALOR_PAGO', 'VALOR_GLOSA', 'MOTIVO_GLOSA', 'REPASSE_FINAL'
     ])
 
-# Especialidades fixas da clínica com dados iniciais de exemplo
+# Especialidades fixas da clínica
 especialidades_fixas = [
     "PSICOLOGIA", "FISIOTERAPIA", "FONOAUDIOLOGIA", 
     "NUTRIÇÃO", "PSICOMOTRICIDADE", "PSICOPEDAGOGIA"
@@ -144,7 +146,7 @@ elif menu == "📤 Enviar arquivos":
         
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🚀 Processar Auditoria", type="primary"):
-        st.success("Motor pronto para integrar com a base de dados!")
+        st.success("Motores prontos para integrar com a base de dados!")
 
 # ==========================================
 # TELA 3: CONTROLE DE GLOSAS
@@ -179,10 +181,10 @@ elif menu == "⚙️ Cadastros":
         col_btn1, col_btn2, _ = st.columns([3, 3, 6])
         
         with col_btn1:
-            # Upload rápido para atualizar os valores em massa via Motor
+            # Chama o motor especializado em valores
             arquivo_importado = st.file_uploader("📥 Atualizar Valores por Excel (.xlsx)", type=["xlsx", "xls"], label_visibility="collapsed")
             if arquivo_importado is not None:
-                dicionario_abas, erro = motor.processar_tabela_valores_por_abas(arquivo_importado)
+                dicionario_abas, erro = motor_valores.processar_tabela_valores_por_abas(arquivo_importado)
                 if erro:
                     st.error(f"Erro ao ler arquivo: {erro}")
                 else:
@@ -190,12 +192,12 @@ elif menu == "⚙️ Cadastros":
                         st.session_state.db_valores_por_especialidade[esp] = df_novo
                     st.success("Valores atualizados com sucesso a partir do Excel!")
                     
-        with col_btn2:
-            pass # Espaço para exportação dedicada
+        with tab2:
+            pass 
 
         st.markdown("<hr style='margin-top: 5px; margin-bottom: 15px;'>", unsafe_allow_html=True)
         
-        # Especialidades sempre fixas e visíveis no Visual
+        # Especialidades sempre fixas e visíveis
         especialidade_selecionada = st.radio(
             "Selecione a Especialidade:",
             especialidades_fixas,
@@ -204,13 +206,11 @@ elif menu == "⚙️ Cadastros":
         
         st.markdown(f"**TABELA DE VALORES - {especialidade_selecionada} | CLÍNICA ESPAÇO SAÚDE**")
         
-        # Garante que a especialidade selecionada existe no dicionário antes de renderizar
         if especialidade_selecionada not in st.session_state.db_valores_por_especialidade:
             st.session_state.db_valores_por_especialidade[especialidade_selecionada] = pd.DataFrame(columns=["PLANO DE SAÚDE", "TEMPO", "VALOR PLANO (R$)", "VALOR PROF (R$)"])
 
         df_atual = st.session_state.db_valores_por_especialidade[especialidade_selecionada]
         
-        # Grelha interativa com suporte a edição
         df_editado = st.data_editor(
             df_atual,
             num_rows="dynamic",
