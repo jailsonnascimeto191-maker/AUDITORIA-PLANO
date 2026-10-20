@@ -74,6 +74,9 @@ if 'db_valores_por_especialidade' not in st.session_state:
 if 'arquivos_extratos_enviados' not in st.session_state:
     st.session_state.arquivos_extratos_enviados = []
 
+if 'arquivos_equipe_enviados' not in st.session_state:
+    st.session_state.arquivos_equipe_enviados = []
+
 # ==========================================
 # 4. BARRA LATERAL (MENU E NAVEGAÇÃO)
 # ==========================================
@@ -103,7 +106,7 @@ if menu == "📊 Painel":
 
     with st.expander("ℹ️ Como funciona o Painel de Repasses"):
         st.markdown("""
-        * **O que faz:** Apresenta o resumo financeiro consolidado da clínica com base nos cruzamentos efetuados[cite: 1].
+        * **O que faz:** Apresenta o resumo financeiro consolidado da clínica com base nos cruzamentos efetuados.
         * **Como usar:** Selecione a competência (mês) e o profissional desejado nos filtros acima para visualizar os indicadores de produção, valores pagos pelos planos, montantes glosados e o valor definitivo do repasse a transferir.
         """)
 
@@ -144,8 +147,8 @@ elif menu == "📤 Enviar arquivos":
     
     with st.expander("ℹ️ Como funciona a Casa das Máquinas"):
         st.markdown("""
-        * **O que faz:** Processa e cruza automaticamente os extratos e demonstrativos das operadoras com os espelhamentos da equipa.
-        * **Como usar:** Selecione o plano ou a opção de identificação automática, envie o documento e confirme o nome do ficheiro antes de processar.
+        * **O que faz:** Processa e cruza automaticamente os extratos das operadoras com os espelhamentos e relatórios de atendimento da equipa.
+        * **Como usar:** Selecione o plano ou identificação automática, envie o documento do plano e adicione os espelhamentos da equipa (em Excel, Word, PDF ou CSV).
         """)
     
     col_e1, col_e2 = st.columns(2)
@@ -180,20 +183,26 @@ elif menu == "📤 Enviar arquivos":
         st.markdown("#### 4. Planilhas de Atendimento (Equipe)")
         st.caption("Espelhamentos de atendimento dos profissionais.")
         
-        arquivos_equipe = st.file_uploader(
-            "Arraste os espelhamentos dos profissionais", 
-            accept_multiple_files=True,
-            help="Formatos aceitos para equipa: Excel (.xlsx, .xls) ou CSV (.csv)."
+        arquivo_eq = st.file_uploader(
+            "Enviar espelhamento da equipa", 
+            key="uploader_equipe",
+            help="Formatos de espelhamento aceitos para a equipa: Excel (.xlsx, .xls), Word (.docx, .doc), PDF (.pdf) ou CSV (.csv)."
         )
-        if arquivos_equipe:
-            st.markdown(f"✅ **{len(arquivos_equipe)} ficheiro(s) de equipa carregado(s):**")
-            for arq in arquivos_equipe:
-                st.markdown(f"- `{arq.name}`")
+        
+        if arquivo_eq is not None:
+            if arquivo_eq.name not in st.session_state.arquivos_equipe_enviados:
+                st.session_state.arquivos_equipe_enviados.append(arquivo_eq.name)
+            st.success(f"Espelhamento carregado: **{arquivo_eq.name}**")
+            
+        if st.session_state.arquivos_equipe_enviados:
+            st.markdown("<p style='font-size: 13px; font-weight: 600; margin-top: 10px;'>Espelhamentos anexados:</p>", unsafe_allow_html=True)
+            for nome_arq in st.session_state.arquivos_equipe_enviados:
+                st.markdown(f"- ✅ `{nome_arq}`")
         
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🚀 Processar Auditoria Completa", type="primary"):
-        if not st.session_state.arquivos_extratos_enviados and not arquivos_equipe:
-            st.warning("Por favor, envie pelo menos um demonstrativo de plano ou planilha de equipa.")
+        if not st.session_state.arquivos_extratos_enviados and not st.session_state.arquivos_equipe_enviados:
+            st.warning("Por favor, envie pelo menos um demonstrativo de plano ou espelhamento de equipa.")
         else:
             st.success("Motores acionados! Cruzamento de dados iniciado com sucesso.")
 
