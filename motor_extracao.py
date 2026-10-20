@@ -35,6 +35,8 @@ except ImportError:
 
 COLUNAS_PADRAO_GLOSAS = [
     "Data do evento",
+    "Protocolo",
+    "Doc Original",
     "Nome do paciente",
     "Código",
     "Procedimento",
@@ -54,6 +56,19 @@ CAMPOS = {
              "DATA PROCEDIMENTO", "DATA SERVICO", "DT ATENDIMENTO", "DT REALIZACAO",
              "DATA", "DT"],
         excl=["NASC", "PAGAMENTO", "VENC", "PROTOCOLO", "ENVIO", "EMISSAO", "ALTA"],
+    ),
+    "Protocolo": dict(
+        tipo="id",
+        sin=["NUMERO PROTOCOLO", "NRO PROTOCOLO", "NR PROTOCOLO", "N PROTOCOLO",
+             "NUM PROTOCOLO", "PROTOCOLO", "PROTOC"],
+        excl=["DATA", "DT", "VALOR", "STATUS", "SITUACAO"],
+    ),
+    "Doc Original": dict(
+        tipo="id",
+        sin=["DOC ORIGINAL", "DOCUMENTO ORIGINAL", "NUMERO GUIA PRESTADOR", "GUIA PRESTADOR",
+             "NUMERO GUIA", "NRO GUIA", "NR GUIA", "N GUIA", "NUM GUIA", "GUIA",
+             "NUMERO DOCUMENTO", "NRO DOCUMENTO", "DOCUMENTO", "DOC"],
+        excl=["DATA", "DT", "VALOR", "TIPO", "CPF", "CNPJ", "CARTEIRA", "SENHA"],
     ),
     "Nome do paciente": dict(
         tipo="nome",
@@ -226,7 +241,7 @@ def _perfil(serie):
     pares = [(v, _txt(v)) for v in serie.tolist()]
     pares = [(v, t) for v, t in pares if t][:60]
     amostra = [t for _, t in pares]
-    perfil = dict(data=0.0, dinheiro=0.0, codigo=0.0, nome=0.0, texto=0.0, tam=0.0, n=len(amostra))
+    perfil = dict(data=0.0, dinheiro=0.0, codigo=0.0, nome=0.0, texto=0.0, id=0.0, tam=0.0, n=len(amostra))
     if not amostra:
         return perfil
     n = len(amostra)
@@ -255,6 +270,12 @@ def _perfil(serie):
     for k, v in c.items():
         perfil[k] = v / n
     perfil["tam"] = sum(len(v) for v in amostra) / n
+    # "id": identificador (protocolo, guia): 4-25 caracteres, tem dígito, não é data nem dinheiro
+    perfil["id"] = sum(
+        1 for v in amostra
+        if re.fullmatch(r"[\w./-]{4,25}", v) and any(ch.isdigit() for ch in v)
+        and not _RE_DATA.search(v) and not _RE_DIN.match(v)
+    ) / n
     return perfil
 
 
@@ -265,7 +286,7 @@ def _score_campo(campo, h_norm, perfil):
     compat = 0.3 + 0.7 * frac            # nome "certo" com conteúdo errado vale pouco
     score = nome * compat
     if tipo in ("data", "codigo", "nome"):
-        score += 50.0 * frac               # conteúdo sozinho consegue identificar
+        score += 50.0 * frac             # conteúdo sozinho consegue identificar
     elif tipo == "texto":
         score += 25.0 * frac
     return score
@@ -355,6 +376,11 @@ def _descobrir_mapeamento(df):
         for c in cols:
             s = _score_campo(campo, hnorm[c], perfis[c])
             if s >= LIMIAR_ATRIBUICAO:
+                # Coluna com nome claramente de OUTRO campo não pode ser puxada só pelo conteúdo
+                # (ex.: coluna "Protocolo" virando "Código" porque tem só dígitos)
+                outro = max((_score_nome(hnorm[c], o) for o in CAMPOS if o != campo), default=0.0)
+                if outro >= 70 and _score_nome(hnorm[c], campo) < LIMIAR_ATRIBUICAO:
+                    continue
                 candidatos.append((s, campo, c))
     candidatos.sort(key=lambda x: -x[0])
 
@@ -403,6 +429,10 @@ def _montar_saida(df, mapa):
     out = pd.DataFrame(index=df.index)
     s = col("Data do evento")
     out["Data do evento"] = s.apply(padronizar_data) if s is not None else "-"
+    s = col("Protocolo")
+    out["Protocolo"] = s.apply(_txt) if s is not None else "-"
+    s = col("Doc Original")
+    out["Doc Original"] = s.apply(_txt) if s is not None else "-"
     s = col("Nome do paciente")
     out["Nome do paciente"] = s.apply(_txt) if s is not None else "Não identificado"
     s = col("Código")
@@ -415,16 +445,19 @@ def _montar_saida(df, mapa):
     s = col("Valor pago")
     out["Valor pago"] = s.apply(limpar_valor_monetario) if s is not None else 0.0
 
-    # CORREÇÃO: Verificar se as colunas de pagamento ou glosa existem de forma real no mapeamento
-    tem_coluna_pago = "Valor pago" in mapa and mapa["Valor pago"] in df.columns
-    tem_coluna_glosa = "Valor da glosa" in mapa and mapa["Valor da glosa"] in df.columns
-
-    if tem_coluna_glosa:
-        g = col("Valor da glosa").apply(limpar_valor_monetario).abs()
+    # Regra rigorosa (evita falso positivo): a coluna de glosa do arquivo manda, linha a linha.
+    # A diferença informado - pago só é usada quando o arquivo NÃO traz glosa utilizável:
+    # sem coluna de glosa, ou coluna de glosa totalmente vazia/zerada.
+    tem_inf_pago = "Valor informado" in mapa and "Valor pago" in mapa
+    calculada = (out["Valor informado"] - out["Valor pago"]).clip(lower=0.0).round(2)
+    s = col("Valor da glosa")
+    if s is not None:
+        g = s.apply(limpar_valor_monetario).abs().round(2)
+        if tem_inf_pago and not (g > 0).any():
+            g = calculada
         out["Valor da glosa"] = g
-    elif tem_coluna_pago:
-        calculada = (out["Valor informado"] - out["Valor pago"]).clip(lower=0.0)
-        out["Valor da glosa"] = calculada.round(2)
+    elif tem_inf_pago:
+        out["Valor da glosa"] = calculada
     else:
         out["Valor da glosa"] = 0.0
 
@@ -469,11 +502,13 @@ def _com_cabecalho(df):
     return pd.DataFrame([cab] + df.astype(object).values.tolist())
 
 
-def mapear_dataframe_para_glosas(df_bruto):
-    """Compatível com a versão antiga: recebe um DataFrame qualquer."""
+def mapear_dataframe_para_glosas(df_bruto, somente_glosas=True):
+    """Recebe um DataFrame qualquer; por padrão devolve só linhas com glosa > 0."""
     if df_bruto is None or df_bruto.empty:
         return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS)
     df, mapa = _processar_bruto(_com_cabecalho(df_bruto))
+    if somente_glosas:
+        df = df[df["Valor da glosa"] > 0.005].reset_index(drop=True)
     df.attrs["mapeamento"] = mapa
     return df
 
@@ -500,6 +535,7 @@ def _linhas_texto_para_df(linhas):
         glosa = v[2] if len(v) >= 3 else max(inf - pago, 0.0)
         regs.append({
             "Data do evento": m.group(1) if m else "",
+            "Protocolo": "-", "Doc Original": "-",
             "Nome do paciente": "",
             "Código": cod.group(1) if cod else "",
             "Procedimento": resto,
