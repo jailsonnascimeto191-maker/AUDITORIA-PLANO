@@ -19,30 +19,27 @@ st.set_page_config(
 # ==========================================
 st.markdown("""
 <style>
-    .stApp { background-color: #f4f6f5; font-family: 'Segoe UI', sans-serif; }
-    [data-testid="stSidebar"] { background-color: #0b2e1e !important; color: #ffffff !important; }
-    [data-testid="stSidebar"] * { color: #ffffff !important; }
-    
-    .metric-card {
-        background-color: #ffffff; border: 1px solid #e1e6e3; border-radius: 8px;
-        padding: 18px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 100%;
-    }
-    .metric-title { font-size: 11px; font-weight: 700; color: #556b60; text-transform: uppercase; margin-bottom: 6px; }
-    .metric-value { font-size: 26px; font-weight: 800; color: #0d2818; }
-    .metric-value-green { font-size: 26px; font-weight: 800; color: #1e7e48; }
-    .metric-value-red { font-size: 26px; font-weight: 800; color: #b32d2d; }
-    .metric-subtext { font-size: 12px; color: #708579; margin-top: 4px; }
-    
-    .stButton>button {
-        background-color: #1b6b3e !important; color: white !important;
-        border-radius: 6px !important; font-weight: 600 !important; border: none !important;
-    }
-    .stButton>button:hover { background-color: #14522f !important; }
-    
-    .admin-warning {
-        background-color: #fdf5e6; color: #855a1f; padding: 12px 16px; 
-        border-radius: 6px; border: 1px solid #f5e1c8; font-size: 14px; margin-bottom: 20px;
-    }
+.stApp { background-color: #f4f6f5; font-family: 'Segoe UI', sans-serif; }
+[data-testid="stSidebar"] { background-color: #0b2e1e !important; color: #ffffff !important; }
+[data-testid="stSidebar"] * { color: #ffffff !important; }
+.metric-card {
+    background-color: #ffffff; border: 1px solid #e1e6e3; border-radius: 8px;
+    padding: 18px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 100%;
+}
+.metric-title { font-size: 11px; font-weight: 700; color: #556b60; text-transform: uppercase; margin-bottom: 6px; }
+.metric-value { font-size: 26px; font-weight: 800; color: #0d2818; }
+.metric-value-green { font-size: 26px; font-weight: 800; color: #1e7e48; }
+.metric-value-red { font-size: 26px; font-weight: 800; color: #b32d2d; }
+.metric-subtext { font-size: 12px; color: #708579; margin-top: 4px; }
+.stButton>button {
+    background-color: #1b6b3e !important; color: white !important;
+    border-radius: 6px !important; font-weight: 600 !important; border: none !important;
+}
+.stButton>button:hover { background-color: #14522f !important; }
+.admin-warning {
+    background-color: #fdf5e6; color: #855a1f; padding: 12px 16px;
+    border-radius: 6px; border: 1px solid #f5e1c8; font-size: 14px; margin-bottom: 20px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -56,8 +53,15 @@ if 'db_auditoria' not in st.session_state:
         'VALOR_PAGO', 'VALOR_GLOSA', 'MOTIVO_GLOSA', 'REPASSE_FINAL'
     ])
 
+if 'db_glosas' not in st.session_state:
+    st.session_state.db_glosas = pd.DataFrame(columns=[
+        "Nome do paciente", "Código", "Procedimento",
+        "Valor informado", "Valor recebido", "Valor da glosa",
+        "Código da glosa", "Motivo da glosa"
+    ])
+
 especialidades_fixas = [
-    "PSICOLOGIA", "FISIOTERAPIA", "FONOAUDIOLOGIA", 
+    "PSICOLOGIA", "FISIOTERAPIA", "FONOAUDIOLOGIA",
     "NUTRIÇÃO", "PSICOMOTRICIDADE", "PSICOPEDAGOGIA"
 ]
 
@@ -81,13 +85,12 @@ if 'arquivos_equipe_enviados' not in st.session_state:
 # 4. BARRA LATERAL (MENU E NAVEGAÇÃO)
 # ==========================================
 with st.sidebar:
-    st.markdown("## 🏥 Espaço Saúde")
+    st.markdown("## Espaço Saúde")
     st.markdown("<p style='font-size: 12px; color: #a3b8ac; margin-top: -15px;'>Sistema de Análise</p>", unsafe_allow_html=True)
     st.markdown("---")
-    
     menu = st.radio(
         "Navegação",
-        ["📊 Painel", "📤 Enviar arquivos", "⚠️ Glosas", "⚙️ Cadastros"],
+        ["📊 Painel", "📥 Enviar arquivos", "🔍 Glosas", "⚙️ Cadastros"],
         label_visibility="collapsed"
     )
 
@@ -106,16 +109,15 @@ if menu == "📊 Painel":
 
     with st.expander("ℹ️ Como funciona o Painel de Repasses"):
         st.markdown("""
-        * **O que faz:** Apresenta o resumo financeiro consolidado da clínica com base nos cruzamentos efetuados.
-        * **Como usar:** Selecione a competência (mês) e o profissional desejado nos filtros acima para visualizar os indicadores de produção, valores pagos pelos planos, montantes glosados e o valor definitivo do repasse a transferir.
+        * *O que faz:* Apresenta o resumo financeiro consolidado da clínica com base nos cruzamentos efetuados.
+        * *Como usar:* Selecione a competência (mês) e o profissional desejado nos filtros acima para visualizar os totais.
         """)
 
     st.markdown("### Filtros de Pesquisa")
     f_col1, f_col2, f_col3 = st.columns([1, 2, 1])
-    
     meses_disponiveis = df_db['MES_COMPETENCIA'].unique().tolist() if not df_db.empty else ['Sem dados']
     profissionais_disponiveis = ['Todos'] + df_db['PROFISSIONAL'].unique().tolist() if not df_db.empty else ['Todos']
-    
+
     with f_col1:
         st.selectbox("Competência", meses_disponiveis)
     with f_col2:
@@ -125,133 +127,186 @@ if menu == "📊 Painel":
         if st.button("☁️ Salvar na Nuvem", use_container_width=True):
             st.success("Dados sincronizados com o Google Sheets!")
 
+    total_glosa_painel = st.session_state.db_glosas["Valor da glosa"].sum() if not st.session_state.db_glosas.empty else 0.0
+    total_inf_painel = st.session_state.db_glosas["Valor informado"].sum() if not st.session_state.db_glosas.empty else 0.0
+    total_pago_painel = st.session_state.db_glosas["Valor recebido"].sum() if not st.session_state.db_glosas.empty else 0.0
+
     k1, k2, k3, k4 = st.columns(4)
     with k1:
-        st.markdown('<div class="metric-card"><div class="metric-title">Produção</div><div class="metric-value">R$ 0,00</div><div class="metric-subtext">0 atendimentos</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-title">Produção</div><div class="metric-value">R$ {total_inf_painel:,.2f}</div></div>', unsafe_allow_html=True)
     with k2:
-        st.markdown('<div class="metric-card"><div class="metric-title">Pago pelos Planos</div><div class="metric-value">R$ 0,00</div><div class="metric-subtext">Valor faturado</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-title">Pago pelos Planos</div><div class="metric-value-green">R$ {total_pago_painel:,.2f}</div></div>', unsafe_allow_html=True)
     with k3:
-        st.markdown('<div class="metric-card"><div class="metric-title">Total Glosado</div><div class="metric-value-red">R$ 0,00</div><div class="metric-subtext">Valores retidos</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-title">Total Glosado</div><div class="metric-value-red">R$ {total_glosa_painel:,.2f}</div></div>', unsafe_allow_html=True)
     with k4:
-        st.markdown('<div class="metric-card"><div class="metric-title">Repasse Definitivo</div><div class="metric-value-green">R$ 0,00</div><div class="metric-subtext">A transferir</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="metric-card"><div class="metric-title">Repasse Definitivo</div><div class="metric-value">R$ 0,00</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>### Detalhamento para o Relatório", unsafe_allow_html=True)
-    st.info("Nenhum arquivo processado. Vá a 'Enviar arquivos' para iniciar.")
+    if df_db.empty:
+        st.info("Nenhum arquivo de repasse cruzado. Vá a 'Enviar arquivos' para iniciar.")
+    else:
+        st.dataframe(df_db, use_container_width=True, hide_index=True)
 
 # ==========================================
 # TELA 2: ENVIO DE ARQUIVOS
 # ==========================================
-elif menu == "📤 Enviar arquivos":
+elif menu == "📥 Enviar arquivos":
     st.title("Casa das Máquinas (Auditoria)")
     st.caption("Faça o upload dos demonstrativos e espelhamentos para cruzamento.")
-    
+
     with st.expander("ℹ️ Como funciona a Casa das Máquinas"):
         st.markdown("""
-        * **O que faz:** Processa e cruza automaticamente os extratos das operadoras com os espelhamentos e relatórios de atendimento da equipa.
-        * **Como usar:** Selecione o plano ou identificação automática, envie o documento do plano e adicione os espelhamentos da equipa (em Excel, Word, PDF ou CSV).
+        * *O que faz:* Processa e cruza automaticamente os extratos das operadoras com os espelhamentos e relatórios de glosa.
+        * *Como usar:* Selecione o plano ou identificação automática, envie o documento do plano e clique em Processar Auditoria Completa.
         """)
-    
+
     col_e1, col_e2 = st.columns(2)
-    
+
     with col_e1:
         st.markdown("#### 3. Demonstrativo do plano")
         st.caption("Demonstrativo de pagamento ou de análise de conta, com glosas.")
-        
+
         plano_selecionado = st.selectbox(
             "Plano de saúde",
             ["Identificar pelo arquivo", "BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"],
-            help="Formatos de demonstrativos aceitos: Excel (.xlsx, .xls), XML (.xml), Word (.docx, .doc), PDF (.pdf), HTML (.html, .htm)."
+            help="Formatos de demonstrativos aceitos: Excel (.xlsx, .xls), XML (.xml), Word (.docx, .doc), PDF (.pdf), HTML (.html, .htm) ou CSV (.csv)."
         )
-        
+
         arquivo_demonstrativo = st.file_uploader(
-            f"Enviar Demonstrativo ({plano_selecionado})", 
+            f"Enviar Demonstrativo ({plano_selecionado})",
             key="uploader_demonstrativo"
         )
-        
+
         if arquivo_demonstrativo is not None:
-            info_arquivo = {"plano": plano_selecionado, "nome": arquivo_demonstrativo.name}
-            if info_arquivo not in st.session_state.arquivos_extratos_enviados:
-                st.session_state.arquivos_extratos_enviados.append(info_arquivo)
-            st.success(f"Ficheiro carregado: **{arquivo_demonstrativo.name}**")
-            
+            nomes_atuais = [item["nome"] for item in st.session_state.arquivos_extratos_enviados]
+            if arquivo_demonstrativo.name not in nomes_atuais:
+                plano_id = (
+                    motor_auditoria.extrair_nome_operadora(arquivo_demonstrativo.name)
+                    if plano_selecionado == "Identificar pelo arquivo"
+                    else plano_selecionado
+                )
+                st.session_state.arquivos_extratos_enviados.append({
+                    "plano": plano_id,
+                    "nome": arquivo_demonstrativo.name,
+                    "arquivo": arquivo_demonstrativo
+                })
+            st.success(f"Ficheiro carregado: *{arquivo_demonstrativo.name}*")
+
         if st.session_state.arquivos_extratos_enviados:
             st.markdown("<p style='font-size: 13px; font-weight: 600; margin-top: 10px;'>Demonstrativos anexados:</p>", unsafe_allow_html=True)
-            for idx, item in enumerate(st.session_state.arquivos_extratos_enviados):
-                st.markdown(f"- ✅ **[{item['plano']}]**: `{item['nome']}`")
+            for item in st.session_state.arquivos_extratos_enviados:
+                st.markdown(f"- *[{item['plano']}]*: {item['nome']}")
 
     with col_e2:
         st.markdown("#### 4. Planilhas de Atendimento (Equipe)")
         st.caption("Espelhamentos de atendimento dos profissionais.")
-        
+
         arquivo_eq = st.file_uploader(
-            "Arraste os espelhamentos dos profissionais", 
+            "Arraste os espelhamentos dos profissionais",
             key="uploader_equipe",
             accept_multiple_files=True,
             help="Formatos aceitos para equipa: Excel (.xlsx, .xls), Word (.docx, .doc), PDF (.pdf) ou CSV (.csv)."
         )
-        
+
         if arquivo_eq:
             for arq in arquivo_eq:
                 if arq.name not in st.session_state.arquivos_equipe_enviados:
                     st.session_state.arquivos_equipe_enviados.append(arq.name)
             st.success(f"{len(arquivo_eq)} Espelhamento(s) carregado(s) com sucesso.")
-            
+
         if st.session_state.arquivos_equipe_enviados:
             st.markdown("<p style='font-size: 13px; font-weight: 600; margin-top: 10px;'>Espelhamentos anexados:</p>", unsafe_allow_html=True)
             for nome_arq in st.session_state.arquivos_equipe_enviados:
-                st.markdown(f"- ✅ `{nome_arq}`")
-        
+                st.markdown(f"- {nome_arq}")
+
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🚀 Processar Auditoria Completa", type="primary"):
-        if not st.session_state.arquivos_extratos_enviados and not st.session_state.arquivos_equipe_enviados:
-            st.warning("Por favor, envie pelo menos um demonstrativo de plano ou espelhamento de equipa.")
-        else:
-            st.success("Motores acionados! Cruzamento de dados iniciado com sucesso.")
+    col_proc, col_limpar, _ = st.columns([3, 2, 5])
+
+    with col_proc:
+        if st.button("⚙️ Processar Auditoria Completa", type="primary", use_container_width=True):
+            if not st.session_state.arquivos_extratos_enviados and not st.session_state.arquivos_equipe_enviados:
+                st.warning("Por favor, envie pelo menos um demonstrativo de plano ou espelhamento de equipa.")
+            else:
+                lista_glosas = []
+                erros = []
+                for item in st.session_state.arquivos_extratos_enviados:
+                    df_ext, erro_ext = motor_extracao.extrair_glosas_de_arquivo(item["arquivo"], item["plano"])
+                    if erro_ext:
+                        erros.append(f"{item['nome']}: {erro_ext}")
+                    elif df_ext is not None and not df_ext.empty:
+                        lista_glosas.append(df_ext)
+
+                if lista_glosas:
+                    st.session_state.db_glosas = pd.concat(lista_glosas, ignore_index=True)
+                    st.success(f"Auditoria concluída! {len(st.session_state.db_glosas)} registo(s) enviado(s) para a Lupa de Glosas.")
+                else:
+                    st.info("Ficheiros processados! Abra a aba 'Glosas' para visualizar e exportar o relatório.")
+
+                for err in erros:
+                    st.error(f"Aviso ao ler {err}")
+
+    with col_limpar:
+        if st.button("🗑️ Limpar Ficheiros", use_container_width=True):
+            st.session_state.arquivos_extratos_enviados = []
+            st.session_state.arquivos_equipe_enviados = []
+            st.session_state.db_glosas = pd.DataFrame(columns=motor_extracao.COLUNAS_PADRAO_GLOSAS)
+            st.rerun()
 
 # ==========================================
 # TELA 3: CONTROLE DE GLOSAS
 # ==========================================
-elif menu == "⚠️ Glosas":
+elif menu == "🔍 Glosas":
     st.title("Lupa de Glosas")
     st.caption("Investigue retenções e gere relatórios detalhados para a chefia.")
 
     with st.expander("ℹ️ Como funciona a Lupa de Glosas"):
         st.markdown("""
-        * **O que faz:** Isola automaticamente os atendimentos onde o valor recebido foi menor que o valor informado, detalhando o paciente, procedimento e os motivos da glosa.
-        * **Como usar:** Analise a tabela abaixo. Quando o relatório estiver validado, utilize os botões de exportação para descarregar o documento em Excel ou PDF e enviá-lo ao seu superior.
+        * *O que faz:* Isola automaticamente os atendimentos onde o valor recebido foi menor que o valor informado.
+        * *Como usar:* Analise a tabela abaixo. Quando o relatório estiver validado, utilize os botões de exportação para gerar o Excel ou PDF.
         """)
 
     st.markdown("### Relatório Detalhado de Glosas")
-    
-    # Gerar dados de exemplo temporários para a UI
-    dados_mock_glosas = {
-        "Nome do paciente": ["João Silva", "Maria Oliveira", "Carlos Souza"],
-        "Código": ["10101012", "20101015", "10101012"],
-        "Procedimento": ["Sessão de Psicologia", "Sessão de Fisioterapia", "Sessão de Psicologia"],
-        "Valor informado": [93.64, 46.82, 93.64],
-        "Valor recebido": [0.00, 0.00, 40.00],
-        "Valor da glosa": [93.64, 46.82, 53.64],
-        "Código da glosa": ["1001", "1005", "1001"],
-        "Motivo da glosa": ["Falta de autorização", "Procedimento incompatível", "Pagamento parcial"]
-    }
-    df_glosas = pd.DataFrame(dados_mock_glosas)
-    
-    st.dataframe(df_glosas, use_container_width=True, hide_index=True)
-    
+
+    # Se já houver demonstrativos processados na Casa das Máquinas, usa os dados reais; caso contrário, exibe o modelo de demonstração
+    if not st.session_state.db_glosas.empty:
+        df_glosas = st.session_state.db_glosas
+        st.success(f"A exibir {len(df_glosas)} registo(s) extraído(s) dos demonstrativos enviados.")
+    else:
+        st.info("A exibir dados de exemplo para demonstração. Envie os demonstrativos reais na aba 'Enviar arquivos' para substituir esta tabela.")
+        dados_mock_glosas = {
+            "Nome do paciente": ["João Silva", "Maria Oliveira", "Carlos Souza"],
+            "Código": ["10101012", "20101015", "10101012"],
+            "Procedimento": ["Sessão de Psicologia", "Sessão de Fisioterapia", "Sessão de Psicologia"],
+            "Valor informado": [93.64, 46.82, 93.64],
+            "Valor recebido": [0.00, 0.00, 40.00],
+            "Valor da glosa": [93.64, 46.82, 53.64],
+            "Código da glosa": ["1001", "1005", "1001"],
+            "Motivo da glosa": ["Falta de autorização", "Procedimento incompatível", "Pagamento parcial"]
+        }
+        df_glosas = pd.DataFrame(dados_mock_glosas)
+
+    total_glosado = df_glosas["Valor da glosa"].sum() if "Valor da glosa" in df_glosas.columns else 0.0
+    st.markdown(f'<div class="metric-card" style="width: 300px; margin-top: 10px; margin-bottom: 20px;"><div class="metric-title">Total Glosado no Relatório</div><div class="metric-value-red">R$ {total_glosado:,.2f}</div></div>', unsafe_allow_html=True)
+
+    df_glosas_editado = st.data_editor(
+        df_glosas,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True
+    )
+
     col_btn1, col_btn2, _ = st.columns([2, 2, 6])
-    
     with col_btn1:
-        excel_data = motor_auditoria.gerar_excel_glosas(df_glosas)
+        excel_data = motor_auditoria.gerar_excel_glosas(df_glosas_editado)
         st.download_button(
-            label="📊 Baixar Relatório (Excel)",
+            label="📥 Baixar Relatório (Excel)",
             data=excel_data,
             file_name="Relatorio_Glosas_Chefia.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
-        
     with col_btn2:
-        pdf_data = motor_auditoria.gerar_pdf_glosas(df_glosas)
+        pdf_data = motor_auditoria.gerar_pdf_glosas(df_glosas_editado)
         if pdf_data:
             st.download_button(
                 label="📄 Baixar Relatório (PDF)",
@@ -267,25 +322,23 @@ elif menu == "⚠️ Glosas":
 # ==========================================
 elif menu == "⚙️ Cadastros":
     st.title("Cadastros")
-    st.markdown('<div class="admin-warning">Somente administradores alteram cadastros, valores e regras. As suas mudanças aqui refletem-se em toda a auditoria.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="admin-warning">Somente administradores alteram cadastros, valores e regras. As suas mudanças impactam os cálculos de auditoria.</div>', unsafe_allow_html=True)
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "Tabela de valores", "Planos", "Profissionais", "Feriados", "Códigos de glosa", "Regras do repasse"
     ])
 
     with tab1:
-        st.markdown("Tabela no mesmo formato da planilha da clínica. O repasse usa o **valor do profissional** desta tabela.")
-        
+        st.markdown("Tabela no mesmo formato da planilha da clínica. O repasse usa o *valor do profissional* desta tabela.")
         with st.expander("ℹ️ Como gerir a Tabela de Valores"):
             st.markdown("""
-            * **O que faz:** Define os valores cobrados aos planos de saúde e os respetivos repasses devidos aos profissionais por tempo de atendimento (30 min, 60 min, etc.).
-            * **Como usar:** Selecione a especialidade desejada e utilize a grelha abaixo para editar diretamente os valores, ou faça o upload de um ficheiro Excel na barra lateral para atualizar automaticamente todas as tabelas em massa.
+            * *O que faz:* Define os valores cobrados aos planos de saúde e os respetivos repasses devidos aos profissionais.
+            * *Como usar:* Selecione a especialidade desejada e utilize a grelha abaixo para editar diretamente os valores ou importe o Excel.
             """)
-        
+
         col_btn1, col_btn2, _ = st.columns([3, 3, 6])
-        
         with col_btn1:
-            arquivo_importado = st.file_uploader("📥 Atualizar Valores por Excel", key="up_valores", label_visibility="collapsed")
+            arquivo_importado = st.file_uploader("📥 Atualizar Valores por Excel", key="up_valores", label_visibility="visible")
             if arquivo_importado is not None:
                 dicionario_abas, erro = motor_valores.processar_tabela_valores_por_abas(arquivo_importado)
                 if erro:
@@ -294,51 +347,52 @@ elif menu == "⚙️ Cadastros":
                     for esp, df_novo in dicionario_abas.items():
                         st.session_state.db_valores_por_especialidade[esp] = df_novo
                     st.success("Valores atualizados com sucesso a partir do Excel!")
-                    
-        with tab2:
-            pass 
+        with col_btn2:
+            pass
 
         st.markdown("<hr style='margin-top: 5px; margin-bottom: 15px;'>", unsafe_allow_html=True)
-        
+
         especialidade_selecionada = st.radio(
             "Selecione a Especialidade:",
             especialidades_fixas,
             horizontal=True
         )
-        
-        st.markdown(f"**TABELA DE VALORES - {especialidade_selecionada} | CLÍNICA ESPAÇO SAÚDE**")
-        
+
+        st.markdown(f"*TABELA DE VALORES - {especialidade_selecionada} | CLÍNICA ESPAÇO SAÚDE*")
+
         if especialidade_selecionada not in st.session_state.db_valores_por_especialidade:
-            st.session_state.db_valores_por_especialidade[especialidade_selecionada] = pd.DataFrame(columns=["PLANO DE SAÚDE", "TEMPO", "VALOR PLANO (R$)", "VALOR PROF (R$)"])
+            st.session_state.db_valores_por_especialidade[especialidade_selecionada] = pd.DataFrame(
+                columns=["PLANO DE SAÚDE", "TEMPO", "VALOR PLANO (R$)", "VALOR PROF (R$)"]
+            )
 
         df_atual = st.session_state.db_valores_por_especialidade[especialidade_selecionada]
-        
+
         df_editado = st.data_editor(
             df_atual,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
                 "PLANO DE SAÚDE": st.column_config.SelectboxColumn(
-                    "PLANO_DE_SAUDE", 
-                    options=["BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"], 
+                    "PLANO DE SAÚDE",
+                    options=["BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"],
                     required=True
                 ),
                 "TEMPO": st.column_config.SelectboxColumn(
-                    "TEMPO", 
-                    options=["30 MIN", "45 MIN", "60 MIN"], 
+                    "TEMPO",
+                    options=["30 MIN", "45 MIN", "60 MIN"],
                     required=True
                 ),
                 "VALOR PLANO (R$)": st.column_config.NumberColumn(
-                    "VALOR_PLANO", 
+                    "VALOR PLANO (R$)",
                     format="%.2f"
                 ),
                 "VALOR PROF (R$)": st.column_config.NumberColumn(
-                    "VALOR_PROF", 
+                    "VALOR PROF (R$)",
                     format="%.2f"
                 )
             }
         )
-        
+
         st.session_state.db_valores_por_especialidade[especialidade_selecionada] = df_editado
 
     with tab2:
