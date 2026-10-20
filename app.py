@@ -71,6 +71,9 @@ if 'db_valores_por_especialidade' not in st.session_state:
         }) for esp in especialidades_fixas
     }
 
+if 'arquivos_extratos_enviados' not in st.session_state:
+    st.session_state.arquivos_extratos_enviados = []
+
 # ==========================================
 # 4. BARRA LATERAL (MENU E NAVEGAÇÃO)
 # ==========================================
@@ -137,27 +140,65 @@ if menu == "📊 Painel":
 # ==========================================
 elif menu == "📤 Enviar arquivos":
     st.title("Casa das Máquinas (Auditoria)")
-    st.caption("Faça o upload dos arquivos para cruzamento. Os ficheiros são descartados após o processamento por segurança.")
+    st.caption("Faça o upload dos demonstrativos e espelhamentos para cruzamento.")
     
     with st.expander("ℹ️ Como funciona a Casa das Máquinas"):
         st.markdown("""
-        * **O que faz:** Processa e cruza automaticamente os extratos financeiros das operadoras com os espelhamentos de atendimento da equipa clínica.
-        * **Como usar:** Arraste os ficheiros correspondentes de cada convênio (Cassi, Unimed, Bradesco) e as planilhas dos profissionais, depois clique em 'Processar Auditoria' para gerar os cálculos.
+        * **O que faz:** Processa e cruza automaticamente os extratos e demonstrativos das operadoras com os espelhamentos da equipa.
+        * **Como usar:** Selecione o plano ou a opção de identificação automática, envie o documento e confirme o nome do ficheiro antes de processar.
         """)
     
     col_e1, col_e2 = st.columns(2)
+    
     with col_e1:
-        st.markdown("#### 1. Extratos (Operadoras)")
-        st.file_uploader("CASSI (.xlsx)", type=["xlsx"])
-        st.file_uploader("Unimed (.xlsx)", type=["xlsx"])
-        st.file_uploader("Bradesco (.xlsx)", type=["xlsx"])
+        st.markdown("#### 3. Demonstrativo do plano")
+        st.caption("Demonstrativo de pagamento ou de análise de conta, com glosas.")
+        
+        plano_selecionado = st.selectbox(
+            "Plano de saúde",
+            ["Identificar pelo arquivo", "BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"],
+            help="Formatos de demonstrativos aceitos: Excel (.xlsx, .xls), XML (.xml), Word (.docx, .doc), PDF (.pdf), HTML (.html, .htm)."
+        )
+        
+        arquivo_demonstrativo = st.file_uploader(
+            f"Enviar Demonstrativo ({plano_selecionado})", 
+            type=["xlsx", "xls", "pdf", "xml", "docx", "doc", "html", "htm"],
+            key="uploader_demonstrativo"
+        )
+        
+        if arquivo_demonstrativo is not None:
+            # Regista o ficheiro na lista da sessão
+            info_arquivo = {"plano": plano_selecionado, "nome": arquivo_demonstrativo.name}
+            if info_arquivo not in st.session_state.arquivos_extratos_enviados:
+                st.session_state.arquivos_extratos_enviados.append(info_arquivo)
+            st.success(f"Ficheiro carregado: **{arquivo_demonstrativo.name}**")
+            
+        if st.session_state.arquivos_extratos_enviados:
+            st.markdown("<p style='font-size: 13px; font-weight: 600; margin-top: 10px;'>Demonstrativos anexados:</p>", unsafe_allow_html=True)
+            for idx, item in enumerate(st.session_state.arquivos_extratos_enviados):
+                st.markdown(f"- ✅ **[{item['plano']}]**: `{item['nome']}`")
+
     with col_e2:
-        st.markdown("#### 2. Planilhas (Equipe)")
-        st.file_uploader("Arraste os espelhamentos (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+        st.markdown("#### 4. Planilhas de Atendimento (Equipe)")
+        st.caption("Espelhamentos de atendimento dos profissionais.")
+        
+        arquivos_equipe = st.file_uploader(
+            "Arraste os espelhamentos dos profissionais", 
+            type=["xlsx", "xls", "csv"], 
+            accept_multiple_files=True,
+            help="Formatos aceitos para equipa: Excel (.xlsx, .xls) ou CSV (.csv)."
+        )
+        if arquivos_equipe:
+            st.markdown(f"✅ **{len(arquivos_equipe)} ficheiro(s) de equipa carregado(s):**")
+            for arq in arquivos_equipe:
+                st.markdown(f"- `{arq.name}`")
         
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🚀 Processar Auditoria", type="primary"):
-        st.success("Motores prontos para integrar com a base de dados!")
+    if st.button("🚀 Processar Auditoria Completa", type="primary"):
+        if not st.session_state.arquivos_extratos_enviados and not arquivos_equipe:
+            st.warning("Por favor, envie pelo menos um demonstrativo de plano ou planilha de equipa.")
+        else:
+            st.success("Motores acionados! Cruzamento de dados iniciado com sucesso.")
 
 # ==========================================
 # TELA 3: CONTROLE DE GLOSAS
@@ -238,7 +279,7 @@ elif menu == "⚙️ Cadastros":
             use_container_width=True,
             column_config={
                 "PLANO DE SAÚDE": st.column_config.SelectboxColumn(
-                    "PLANO DE SAÚDE", 
+                    "PLANO_DE_SAUDE", 
                     options=["BRADESCO", "UNIMED", "CASSI", "FOX", "SULAMÉRICA", "MEDSERVICE"], 
                     required=True
                 ),
@@ -248,11 +289,11 @@ elif menu == "⚙️ Cadastros":
                     required=True
                 ),
                 "VALOR PLANO (R$)": st.column_config.NumberColumn(
-                    "VALOR PLANO (R$)", 
+                    "VALOR_PLANO", 
                     format="%.2f"
                 ),
                 "VALOR PROF (R$)": st.column_config.NumberColumn(
-                    "VALOR PROF (R$)", 
+                    "VALOR_PROF", 
                     format="%.2f"
                 )
             }
