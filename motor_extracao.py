@@ -90,20 +90,37 @@ def mapear_dataframe_para_glosas(df_bruto):
     df = df_bruto.copy()
     df.columns = [str(c).strip().upper() for c in df.columns]
 
-    def achar_col(palavras_chave):
-        for col in df.columns:
-            if any(k in col for k in palavras_chave):
-                return col
+    def buscar_coluna_inteligente(lista_sinonimos):
+        """Varre os sinónimos do mais específico ao mais genérico."""
+        for sin in lista_sinonimos:
+            for col in df.columns:
+                if sin in col:
+                    return col
         return None
 
-    col_data = achar_col(["DATA", "ATENDIMENTO", "REALIZACAO", "EXECUCAO", "DT_EVENTO"])
-    col_pac = achar_col(["PACIENTE", "BENEFICIARIO", "BENEFICIÁRIO", "NOME", "SEGURADO", "USUARIO", "USUÁRIO"])
-    col_cod = achar_col(["CODIGO", "CÓDIGO", "COD_PROC", "PROCEDIMENTO_COD", "TUSS", "AMB"])
-    col_proc = achar_col(["PROCEDIMENTO", "DESCRICAO", "DESCRIÇÃO", "SERVICO", "SERVIÇO", "EVENTO"])
-    col_v_inf = achar_col(["INFORMADO", "APRESENTADO", "COBRADO", "FATURADO", "VALOR PLANO", "VL_INF"])
-    col_v_rec = achar_col(["RECEBIDO", "PAGO", "LIBERADO", "LIQUIDO", "LÍQUIDO", "VL_PAGO"])
-    col_v_glo = achar_col(["VALOR DA GLOSA", "VALOR GLOSA", "VL_GLOSA", "GLOSADO", "GLOSA (R$)", "RETIDO"])
-    col_m_glo = achar_col(["MOTIVO", "DESCRICAO GLOSA", "DESCRIÇÃO DA GLOSA", "JUSTIFICATIVA", "OBS"])
+    # 1. Data do Evento (Procura termos específicos e depois termos genéricos como "DATA" ou "DT")
+    col_data = buscar_coluna_inteligente(["DATA_ATENDIMENTO", "DATA REALIZACAO", "DATA EXECUCAO", "DT ATENDIMENTO", "DATA EVENTO", "DATA", "DT"])
+
+    # 2. Nome do Paciente (Procura por paciente, beneficiário, segurado, ou apenas "NOME" / "CLIENTE")
+    col_pac = buscar_coluna_inteligente(["PACIENTE", "BENEFICIARIO", "BENEFICIÁRIO", "SEGURADO", "USUARIO", "CLIENTE", "NOME"])
+
+    # 3. Código do Procedimento (Procura por código, tuss, amb, item ou proc)
+    col_cod = buscar_coluna_inteligente(["COD_PROC", "CÓDIGO", "CODIGO", "TUSS", "AMB", "ITEM", "PROC"])
+
+    # 4. Nome do Procedimento (Procura por procedimento, descrição, serviço, evento)
+    col_proc = buscar_coluna_inteligente(["PROCEDIMENTO", "DESCRIÇÃO", "DESCRICAO", "SERVICO", "EVENTO"])
+
+    # 5. Valor Informado (Procura por informado, apresentado, cobrado, faturado ou apenas "VALOR" / "VL")
+    col_v_inf = buscar_coluna_inteligente(["INFORMADO", "APRESENTADO", "COBRADO", "FATURADO", "VALOR PLANO", "VALOR COBRADO", "VALOR"])
+
+    # 6. Valor Pago / Recebido (Procura por pago, recebido, liberado, líquido)
+    col_v_rec = buscar_coluna_inteligente(["RECEBIDO", "PAGO", "LIBERADO", "LIQUIDO", "VALOR PAGO", "VL PAGO"])
+
+    # 7. Valor da Glosa (Procura por glosa, retido, glosado)
+    col_v_glo = buscar_coluna_inteligente(["VALOR GLOSA", "GLOSADO", "GLOSA", "RETIDO", "VALOR RETIDO"])
+
+    # 8. Motivo da Glosa (Procura por motivo, justificativa, observação, glosa)
+    col_m_glo = buscar_coluna_inteligente(["MOTIVO", "JUSTIFICATIVA", "OBS", "DESCRICAO GLOSA", "DESCRIÇÃO GLOSA"])
 
     df_out = pd.DataFrame()
     df_out["Data do evento"] = df[col_data].apply(padronizar_data) if col_data else "-"
@@ -120,10 +137,10 @@ def mapear_dataframe_para_glosas(df_bruto):
 
     df_out["Motivo da glosa"] = df[col_m_glo].astype(str) if col_m_glo else "Glosa identificada no demonstrativo"
 
-    df_glosas = df_out[(df_out["Valor da glosa"] > 0) | (df_out["Valor pago"] < df_out["Valor informado"])].copy()
-    if df_glosas.empty and len(df_out) > 0:
+    # Se encontrar colunas válidas, retorna os dados mapeados
+    if len(df_out) > 0:
         return df_out
-    return df_glosas
+    return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS)
 
 def extrair_glosas_xml(arquivo_xml):
     arquivo_xml.seek(0)
@@ -143,17 +160,16 @@ def extrair_glosas_xml(arquivo_xml):
             v_glosa = limpar_valor_monetario(dados_no.get('valorglosa', max(0.0, v_inf - v_pago)))
             dt_ev = padronizar_data(dados_no.get('dataatendimento', dados_no.get('data', '-')))
 
-            if v_glosa > 0 or (v_inf > 0 and v_pago < v_inf):
-                registos.append({
-                    "Data do evento": dt_ev,
-                    "Nome do paciente": dados_no.get('nomebeneficiario', dados_no.get('beneficiario', 'Beneficiário TISS')),
-                    "Código": dados_no.get('codigoprocedimento', dados_no.get('procedimento', '-')),
-                    "Procedimento": dados_no.get('descricaoprocedimento', dados_no.get('descricao', 'Procedimento TISS')),
-                    "Valor informado": v_inf,
-                    "Valor pago": v_pago,
-                    "Valor da glosa": v_glosa if v_glosa > 0 else round(v_inf - v_pago, 2),
-                    "Motivo da glosa": dados_no.get('descricaoglosa', dados_no.get('motivoglosa', 'Retenção TISS'))
-                })
+            registos.append({
+                "Data do evento": dt_ev,
+                "Nome do paciente": dados_no.get('nomebeneficiario', dados_no.get('beneficiario', 'Beneficiário TISS')),
+                "Código": dados_no.get('codigoprocedimento', dados_no.get('procedimento', '-')),
+                "Procedimento": dados_no.get('descricaoprocedimento', dados_no.get('descricao', 'Procedimento TISS')),
+                "Valor informado": v_inf,
+                "Valor pago": v_pago,
+                "Valor da glosa": v_glosa if v_glosa > 0 else round(v_inf - v_pago, 2),
+                "Motivo da glosa": dados_no.get('descricaoglosa', dados_no.get('motivoglosa', 'Retenção TISS'))
+            })
 
     return pd.DataFrame(registos, columns=COLUNAS_PADRAO_GLOSAS)
 
@@ -164,6 +180,8 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano="Identificar pelo arquivo"):
 
         if nome.endswith((".xlsx", ".xls")):
             df_bruto = pd.read_excel(arquivo_upload)
+            if len(df_bruto.columns) < 3:
+                df_bruto = pd.read_excel(arquivo_upload, header=1)
             return mapear_dataframe_para_glosas(df_bruto), None
 
         elif nome.endswith(".csv"):
