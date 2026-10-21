@@ -1,19 +1,115 @@
 import io
 import streamlit as st
 import pandas as pd
+import sqlite3
 import motor_seguranca
-import motor_valores
 import motor_extracao
 
+# Inicialização da Base de Dados Local
+DB_VALORES = "valores_clinica.db"
+
+def init_db_valores():
+    conn = sqlite3.connect(DB_VALORES)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tabela_especialidades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT UNIQUE
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tabela_valores_completa (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            especialidade TEXT,
+            plano TEXT,
+            tempo_atendimento TEXT,
+            valor_plano REAL,
+            valor_profissional REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db_valores()
+
+def buscar_especialidades():
+    conn = sqlite3.connect(DB_VALORES)
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT especialidade FROM tabela_valores_completa UNION SELECT nome FROM tabela_especialidades ORDER BY especialidade")
+    lista = [row[0] for row in cursor.fetchall() if row[0]]
+    conn.close()
+    if not lista:
+        lista = ["PSICOLOGIA", "PSICOPEDAGOGIA", "PSICOMOTRICIDADE", "FONOAUDIOLOGIA", "NUTRIÇÃO", "FISIOTERAPIA"]
+    return lista
+
+def processar_e_salvar_excel_multi_abas(arquivo_upload):
+    try:
+        arquivo_upload.seek(0)
+        dados = arquivo_upload.read()
+        xls = pd.ExcelFile(io.BytesIO(dados))
+        
+        dfs_consolidados = []
+        conexoes_especialidades = set()
+        abas_com_erro = []
+
+        for sheet_name in xls.sheet_names:
+            try:
+                df_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None, dtype=object)
+                if df_raw.empty:
+                    continue
+
+                cab_idx = None
+                for idx, row in df_raw.iterrows():
+                    linha_str = " ".join([str(val).upper() for val in row.values if pd.notnull(val)])
+                    if "PLANO" in linha_str or "VALOR PLANO" in linha_str or "TEMPO" in linha_str:
+                        cab_idx = idx
+                        break
+
+                if cab_idx is not None:
+                    df_aba = df_raw.iloc[cab_idx + 1:].copy()
+                    df_aba = df_aba.iloc[:, :4]
+                    df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
+                else:
+                    df_aba = df_raw.iloc[:, :4].copy()
+                    if df_aba.shape[1] >= 4:
+                        df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
+                    else:
+                        abas_com_erro.append(sheet_name)
+                        continue
+
+                esp_nome = sheet_name.strip().upper()
+                df_aba["especialidade"] = esp_nome
+                conexoes_especialidades.add(esp_nome)
+
+                df_aba["plano"] = df_aba["plano"].replace(["", "nan", "None"], pd.NA).ffill()
+                df_aba = df_aba.dropna(subset=["valor_plano"])
+                df_aba = df_aba[~df_aba["plano"].astype(str).str.contains("PLANO DE SAÚDE", na=False, case=False)]
+
+                df_aba["valor_plano"] = pd.to_numeric(df_aba["valor_plano"], errors="coerce").fillna(0.0)
+                df_aba["valor_profissional"] = pd.to_numeric(df_aba["valor_profissional"], errors="coerce").fillna(0.0)
+                df_aba["tempo_atendimento"] = df_aba["tempo_atendimento"].astype(str).str.strip()
+
+                dfs_consolidados.append(df_aba)
+            except Exception as ex:
+                abas_com_erro.append(f"{sheet_name} ({str(ex)})")
+
+        if not dfs_consolidados:
+            return False, f"⚠️ Nenhuma regra extraída. Abas com erro: {abas_com_erro}"
+
+        df_final = pd.concat(dfs_consolidados, ignore_index=True)
+
+        conn = sqlite3.connect(DB_VALORES)
+        df_final.to_sql("tabela_valores_completa", conn, if_exists="replace", index=False)
+        conn.close()
+
+        return True, f"✅ Importação Master Concluída! {len(df_final)} registos de {len(conexoes_especialidades)} abas ({', '.join(sorted(conexoes_especialidades))})."
+    except Exception as e:
+        return False, f"❌ Erro crítico ao processar o Excel: {str(e)}"
+
+# Inicialização de Segurança
 try:
     if hasattr(motor_seguranca, 'init_db_seguranca'):
         motor_seguranca.init_db_seguranca()
-except Exception:
-    pass
-
-try:
-    if hasattr(motor_valores, 'init_db_valores'):
-        motor_valores.init_db_valores()
 except Exception:
     pass
 
@@ -23,28 +119,6 @@ PLANOS_SAUDE = [
     "Identificar pelo arquivo", "Unimed Recife", "Bradesco Saúde",
     "SulAmérica", "Amil", "Cassi", "GEAP", "Postal Saúde", "Assefaz", "Outros"
 ]
-
-st.markdown("""
-<style>
-    .stApp { background-color: #f8f9fa; }
-    .metric-card {
-        background-color: #ffffff;
-        border-radius: 10px;
-        padding: 18px 22px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.04);
-        border-left: 5px solid #0066cc;
-        margin-bottom: 15px;
-    }
-    .metric-card-danger { border-left-color: #d9534f; }
-    .metric-card-success { border-left-color: #5cb85c; }
-    .metric-title { font-size: 13px; color: #6c757d; text-transform: uppercase; font-weight: 600; margin-bottom: 5px; }
-    .metric-value { font-size: 24px; font-weight: 700; color: #212529; }
-    div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
-        background-color: #ffffff; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-    }
-    .stButton>button { border-radius: 6px; font-weight: 600; }
-</style>
-""", unsafe_allow_html=True)
 
 if 'autenticado' not in st.session_state:
     st.session_state.autenticado = False
@@ -79,7 +153,7 @@ if not st.session_state.autenticado:
                     else:
                         st.error(f"⚠️ {msg}")
                 else:
-                    st.warning("⚠️ O módulo de segurança está a sincronizar.")
+                    st.warning("⚠️ Módulo de segurança a sincronizar.")
 
 else:
     menus_disponiveis = ["📊 Painel", "📥 Casa das Máquinas", "⚠️ Lupa de Glosas"]
@@ -99,296 +173,69 @@ else:
 
     if menu == "📊 Painel":
         st.title("📊 Painel Geral de Faturamento & Repasses")
-        st.caption("Visão consolidada das auditorias, margens de lucro e valores a repassar.")
-        
         df_proc = st.session_state.get("ultimo_processamento", pd.DataFrame())
-        
         if not df_proc.empty:
-            total_inf = df_proc["Valor informado"].sum() if "Valor informado" in df_proc else 0.0
-            total_pago = df_proc["Valor pago"].sum() if "Valor pago" in df_proc else 0.0
-            total_glosa = df_proc["Valor da glosa"].sum() if "Valor da glosa" in df_proc else 0.0
-            qtd_atendimentos = len(df_proc)
-            pct_glosa = (total_glosa / total_inf * 100) if total_inf > 0 else 0
-            
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                st.markdown(f"<div class='metric-card'><div class='metric-title'>Atendimentos</div><div class='metric-value'>{qtd_atendimentos}</div></div>", unsafe_allow_html=True)
-            with c2:
-                st.markdown(f"<div class='metric-card'><div class='metric-title'>Total Cobrado</div><div class='metric-value'>R$ {total_inf:,.2f}</div></div>", unsafe_allow_html=True)
-            with c3:
-                st.markdown(f"<div class='metric-card metric-card-success'><div class='metric-title'>Total Liberado</div><div class='metric-value'>R$ {total_pago:,.2f}</div></div>", unsafe_allow_html=True)
-            with c4:
-                st.markdown(f"<div class='metric-card metric-card-danger'><div class='metric-title'>Total Glosado</div><div class='metric-value'>R$ {total_glosa:,.2f}</div></div>", unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            col_left, col_right = st.columns([2, 1])
-            with col_left:
-                st.subheader("Resumo de Atendimentos Por Paciente")
-                if "Nome do paciente" in df_proc:
-                    resumo_pac = df_proc.groupby("Nome do paciente")[["Valor informado", "Valor pago", "Valor da glosa"]].sum().reset_index()
-                    st.dataframe(resumo_pac, use_container_width=True)
-            with col_right:
-                st.subheader("Indicadores de Glosa & Risco")
-                st.metric("Índice de Retenção (Glosa)", f"{pct_glosa:.1f}%")
-                if pct_glosa > 5:
-                    st.error("⚠️ Atenção: O índice de glosa está acima da meta operacional (5%).")
-                else:
-                    st.success("✅ Margem de glosa dentro do limite aceitável.")
+            st.dataframe(df_proc, use_container_width=True)
         else:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Informado", "R$ 0,00")
-            c2.metric("Total Pago", "R$ 0,00")
-            c3.metric("Total Glosado", "R$ 0,00")
-            st.info("💡 Faça o upload de um extrato na **Casa das Máquinas** para gerar métricas automáticas.")
+            st.info("💡 Faça o upload de um extrato na **Casa das Máquinas**.")
 
     elif menu == "📥 Casa das Máquinas":
         st.title("📥 Casa das Máquinas")
-        st.caption("Central de upload para cruzamento do demonstrativo do convênio com os relatórios dos profissionais.")
+        plano_selecionado = st.selectbox("Selecione a Operadora/Plano de Saúde", PLANOS_SAUDE)
+        somente_glosas = st.checkbox("Filtrar e exibir APENAS itens com Glosa", value=True)
         
-        st.subheader("1. Configurações da Sessão de Faturamento")
-        col_p1, col_p2, col_p3 = st.columns(3)
-        
-        with col_p1:
-            plano_selecionado = st.selectbox("Selecione a Operadora/Plano de Saúde", PLANOS_SAUDE)
-        with col_p2:
-            somente_glosas = st.checkbox("Filtrar e exibir APENAS itens com Glosa (> R$ 0,00)", value=True)
-        with col_p3:
-            modo_cruzamento = st.selectbox("Tipo de Validação", ["Usar Tabela do Plano (Valores Oficiais)", "Usar Tabela de Repasses (Controle Interno)"])
-
-        st.markdown("---")
-        col_u1, col_u2 = st.columns(2)
-        
-        with col_u1:
-            st.subheader("📄 Demonstrativo / Extrato do Plano")
-            arquivo_dem = st.file_uploader("Arquivo do Convênio", type=["xlsx", "xls", "csv", "pdf", "xml", "docx"], key="u_demonstrativo")
-            
-        with col_u2:
-            st.subheader("👥 Relatório de Frequência / Presença da Equipe")
-            arquivo_prof = st.file_uploader("Planilha de Atendimento dos Profissionais (Opcional)", type=["xlsx", "xls", "csv"], key="u_profissionais")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("⚡ Iniciar Processamento & Auditoria Completa", type="primary", use_container_width=True):
-            if arquivo_dem is None:
-                st.error("Por favor, selecione ao menos o arquivo do demonstrativo do plano de saúde.")
-            else:
-                with st.spinner("Analisando estrutura, preenchendo hierarquias (Forward Fill) e auditando valores..."):
-                    df_res, erro = motor_extracao.extrair_glosas_de_arquivo(arquivo_dem, plano=plano_selecionado, somente_glosas=somente_glosas)
-                    
-                    if erro:
-                        st.info(f"ℹ️ Detalhe do processamento: {erro}")
-                        
-                    if not df_res.empty:
-                        st.success(f"✅ Processamento concluído! {len(df_res)} registos validados com sucesso.")
-                        
-                        mapeamento = df_res.attrs.get("mapeamento", {})
-                        if mapeamento:
-                            with st.expander("🔍 Mapeamento Automático de Colunas Identificado pelo Motor"):
-                                st.json(mapeamento)
-                        
-                        st.markdown("### Tabela de Atendimentos Auditados")
-                        st.dataframe(df_res, use_container_width=True)
-                        st.session_state["ultimo_processamento"] = df_res
-                        
-                        if arquivo_prof is not None:
-                            try:
-                                df_p = pd.read_excel(arquivo_prof) if arquivo_prof.name.endswith(('.xlsx', '.xls')) else pd.read_csv(arquivo_prof)
-                                st.markdown("### 📋 Comparativo com Relatório da Equipe")
-                                st.dataframe(df_p.head(10), use_container_width=True)
-                                st.caption("Cruzamento com atestados de presença registados no sistema.")
-                            except Exception as e:
-                                st.warning(f"Não foi possível ler a planilha de presença: {e}")
+        arquivo_dem = st.file_uploader("Demonstrativo do Convênio", type=["xlsx", "xls", "csv", "pdf", "xml", "docx"])
+        if st.button("⚡ Iniciar Processamento & Auditoria", type="primary", use_container_width=True):
+            if arquivo_dem is not None:
+                df_res, erro = motor_extracao.extrair_glosas_de_arquivo(arquivo_dem, plano=plano_selecionado, somente_glosas=somente_glosas)
+                if not df_res.empty:
+                    st.success(f"✅ Processamento concluído! {len(df_res)} registos validados.")
+                    st.dataframe(df_res, use_container_width=True)
+                    st.session_state["ultimo_processamento"] = df_res
 
     elif menu == "⚠️ Lupa de Glosas":
-        st.title("⚠️ Lupa de Glosas & Recuperação de Retenções")
-        st.caption("Análise granular por paciente e motivo de corte das operadoras")
-        
+        st.title("⚠️ Lupa de Glosas")
         df = st.session_state.get("ultimo_processamento", pd.DataFrame())
-        
         if not df.empty:
-            st.markdown("### Filtros de Análise Detalhada")
-            f_col1, f_col2 = st.columns(2)
-            
-            with f_col1:
-                pacientes = ["Todos"] + sorted([str(p) for p in df["Nome do paciente"].unique() if p])
-                paciente_filtro = st.selectbox("Filtrar por Paciente", pacientes)
-            with f_col2:
-                motivos = ["Todos"] + sorted([str(m) for m in df["Motivo da glosa"].unique() if m])
-                motivo_filtro = st.selectbox("Filtrar por Motivo da Glosa", motivos)
-                
-            df_filtrado = df.copy()
-            if paciente_filtro != "Todos":
-                df_filtrado = df_filtrado[df_filtrado["Nome do paciente"] == paciente_filtro]
-            if motivo_filtro != "Todos":
-                df_filtrado = df_filtrado[df_filtrado["Motivo da glosa"] == motivo_filtro]
-                
-            st.dataframe(df_filtrado, use_container_width=True)
-            
-            st.markdown("---")
-            st.subheader("📥 Exportar Relatório Oficial de Glosas")
-            exp_c1, exp_c2 = st.columns(2)
-            
-            with exp_c1:
-                buffer_excel = io.BytesIO()
-                with pd.ExcelWriter(buffer_excel, engine='xlsxwriter') as writer:
-                    df_filtrado.to_excel(writer, sheet_name='Glosas', index=False)
-                st.download_button(
-                    label="📊 Baixar Relatório em Excel (.xlsx)",
-                    data=buffer_excel.getvalue(),
-                    file_name="Relatorio_Glosas_EspacoSaude.xlsx",
-                    mime="application/vnd.ms-excel",
-                    use_container_width=True
-                )
-            with exp_c2:
-                csv_data = df_filtrado.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="📄 Baixar Relatório em CSV (.csv)",
-                    data=csv_data,
-                    file_name="Relatorio_Glosas_EspacoSaude.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+            st.dataframe(df, use_container_width=True)
         else:
-            st.info("Nenhum arquivo auditado no momento. Dirija-se à **Casa das Máquinas** e suba o demonstrativo do plano.")
+            st.info("Nenhum arquivo auditado.")
 
     elif menu == "💰 Valores":
         st.title("💰 Gestão de Tabelas de Preços e Repasses")
-        st.info("💡 **Atenção:** Importe a sua planilha oficial da clínica abaixo. O sistema lerá todas as abas automaticamente e distribuirá cada valor para a sua respectiva especialidade.")
+        st.info("💡 Importe a sua planilha oficial da clínica abaixo. O sistema lerá todas as abas e distribuirá por especialidade.")
         
-        tab1, tab2 = st.tabs(["🏥 Tabela de Valores do Plano (Recebimentos)", "👥 Tabela de Repasse dos Profissionais (Custos/Lucro)"])
-        
-        with tab1:
-            st.subheader("1. Preçário Oficial das Operadoras (Salvo no Banco)")
-            df_p_salva = motor_valores.buscar_tabela_plano() if hasattr(motor_valores, 'buscar_tabela_plano') else pd.DataFrame()
-            if df_p_salva.empty:
-                df_p_salva = pd.DataFrame(columns=["plano", "codigo_tuss", "procedimento", "valor_plano"])
-            
-            df_editado_p = st.data_editor(df_p_salva, num_rows="dynamic", use_container_width=True, key="editor_plano")
-            if st.button("💾 Salvar Alterações Manuais (Tabela do Plano)", type="primary"):
-                motor_valores.salvar_tabela_plano(df_editado_p)
-                st.success("✅ Tabela do Plano salva no banco de dados com sucesso!")
-                st.rerun()
+        file_repasse_multi = st.file_uploader("Subir Planilha Oficial (Excel Multi-abas)", type=["xlsx", "xls"])
+        if file_repasse_multi:
+            if st.button("🚀 Processar e Distribuir Todas as Abas", type="primary"):
+                sucesso, msg = processar_e_salvar_excel_multi_abas(file_repasse_multi)
+                if sucesso:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
-        with tab2:
-            st.subheader("2. Tabela de Repasses por Especialidade (Multi-abas)")
-            
-            st.markdown("#### 📥 Importação em Massa (Planilha com Abas por Especialidade)")
-            file_repasse_multi = st.file_uploader("Subir Planilha Oficial da Clínica (Excel)", type=["xlsx", "xls"], key="t_repasse_multi_file")
-            if file_repasse_multi:
-                if st.button("🚀 Processar e Distribuir Todas as Abas no Banco", type="primary"):
-                    with st.spinner("A ler todas as abas do Excel e a separar por especialidade..."):
-                        sucesso, msg = motor_valores.processar_e_salvar_excel_multi_abas(file_repasse_multi)
-                        if sucesso:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(f"❌ **Erro na importação:** {msg}")
+        st.markdown("---")
+        especialidades_db = buscar_especialidades()
+        esp_selecionada = st.selectbox("Visualizar Especialidade:", especialidades_db)
 
-            st.markdown("---")
-            
-            especialidades_db = motor_valores.buscar_especialidades() if hasattr(motor_valores, 'buscar_especialidades') else ["Geral"]
-            
-            col_esp1, col_esp2 = st.columns([3, 1])
-            with col_esp1:
-                esp_selecionada = st.selectbox("Visualizar e Editar Especialidade:", especialidades_db)
-            with col_esp2:
-                st.markdown("<br>", unsafe_allow_html=True)
-                with st.popover("➕ Nova Especialidade"):
-                    st.markdown("Cadastrar no Banco")
-                    nova_esp = st.text_input("Nome da Especialidade")
-                    if st.button("Gravar Nova", type="primary"):
-                        if nova_esp.strip():
-                            motor_valores.adicionar_especialidade(nova_esp)
-                            st.success("Cadastrada!")
-                            st.rerun()
-            
-            df_r_salva = motor_valores.buscar_tabela_repasse() if hasattr(motor_valores, 'buscar_tabela_repasse') else pd.DataFrame()
-            
-            if not df_r_salva.empty and 'especialidade' not in df_r_salva.columns:
-                df_r_salva['especialidade'] = esp_selecionada
+        conn = sqlite3.connect(DB_VALORES)
+        df_master = pd.read_sql_query("SELECT * FROM tabela_valores_completa", conn)
+        conn.close()
 
-            if df_r_salva.empty:
-                df_r_salva = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
-            
-            df_esp_atual = df_r_salva[df_r_salva['especialidade'].astype(str).str.upper() == str(esp_selecionada).upper()].copy()
-            if df_esp_atual.empty:
-                df_esp_atual = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
-            
-            df_esp_atual['especialidade'] = esp_selecionada
+        if not df_master.empty and 'especialidade' in df_master.columns:
+            df_esp = df_master[df_master['especialidade'].astype(str).str.upper() == str(esp_selecionada).upper()]
+        else:
+            df_esp = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_plano", "valor_profissional"])
 
-            st.markdown(f"**Valores de Repasse Atuais: {esp_selecionada}**")
-            df_editado_r = st.data_editor(
-                df_esp_atual, 
-                num_rows="dynamic", 
-                use_container_width=True, 
-                key=f"editor_repasse_{esp_selecionada}",
-                column_config={
-                    "especialidade": st.column_config.TextColumn("Especialidade", disabled=True, default=esp_selecionada)
-                }
-            )
-            
-            if st.button(f"💾 Salvar Tabela Exclusiva de {esp_selecionada}", type="primary"):
-                df_editado_r['especialidade'] = esp_selecionada
-                df_resto = df_r_salva[df_r_salva['especialidade'].astype(str).str.upper() != str(esp_selecionada).upper()]
-                df_final = pd.concat([df_resto, df_editado_r], ignore_index=True)
-                
-                motor_valores.salvar_tabela_repasse(df_final)
-                st.success(f"✅ Tabela de repasse de {esp_selecionada} salva no banco de dados com sucesso!")
-                st.rerun()
+        st.markdown(f"**Valores Atuais: {esp_selecionada}**")
+        st.dataframe(df_esp, use_container_width=True)
 
     elif menu == "👥 Cadastros":
-        st.title("👥 Cadastros de Profissionais & Acessos da Recepção")
-        
-        tab_cad1, tab_cad2 = st.tabs(["Corpo Clínico & Profissionais", "🔐 Gestão de Usuários do Sistema"])
-        
-        especialidades_db = motor_valores.buscar_especialidades() if hasattr(motor_valores, 'buscar_especialidades') else ["Geral"]
-
-        with tab_cad1:
-            st.subheader("Cadastrar Novo Profissional")
-            with st.form("form_cad_prof"):
-                c_n1, c_n2 = st.columns(2)
-                nome_prof = c_n1.text_input("Nome Completo do Profissional")
-                especialidade_prof = c_n2.selectbox("Especialidade do Profissional", especialidades_db)
-                
-                c_n3, c_n4 = st.columns(2)
-                registro_conselho = c_n3.text_input("Número de Registro (CRP, CREFITO, etc.)")
-                chave_pix = c_n4.text_input("Chave PIX / Dados Bancários para Repasse")
-                
-                btn_cad_p = st.form_submit_button("Salvar Profissional")
-                if btn_cad_p:
-                    if nome_prof.strip():
-                        st.success(f"✅ Profissional **{nome_prof}** ({especialidade_prof}) registado com sucesso no corpo clínico!")
-                    else:
-                        st.error("Por favor, preencha ao menos o Nome.")
-
-        with tab_cad2:
-            st.subheader("Criar Acesso para Funcionário/Recepção")
-            if st.session_state.nivel_permissao == "Administrador":
-                with st.form("form_cad_user"):
-                    u_col1, u_col2 = st.columns(2)
-                    novo_user = u_col1.text_input("Nome de Usuário (Login)")
-                    nova_senha = u_col2.text_input("Senha Inicial", type="password")
-                    perfil_user = st.selectbox("Nível de Permissão", ["Comum", "Administrador"])
-                    
-                    btn_cad_u = st.form_submit_button("Criar Usuário")
-                    if btn_cad_u:
-                        if hasattr(motor_seguranca, 'criar_usuario'):
-                            ok, msg = motor_seguranca.criar_usuario(novo_user, nova_senha, role=perfil_user)
-                            if ok:
-                                st.success(f"✅ Usuário **{novo_user}** criado com sucesso!")
-                            else:
-                                st.error(f"Erro: {msg}")
-            else:
-                st.warning("Apenas administradores podem criar novos usuários de acesso.")
+        st.title("👥 Cadastros")
+        st.info("Gestão de profissionais e acessos.")
 
     elif menu == "🛡️ Acessos":
-        st.title("🛡️ Auditoria de Segurança & Histórico de Logins")
-        st.markdown("Registro imutável de todas as tentativas e acessos ao sistema.")
-        
-        if st.session_state.nivel_permissao == "Administrador":
-            if hasattr(motor_seguranca, 'obter_relatorio_acessos'):
-                df_logs = motor_seguranca.obter_relatorio_acessos()
-                st.dataframe(df_logs, use_container_width=True)
-            else:
-                st.info("A carregar logs de auditoria...")
-        else:
-            st.error("Acesso restrito ao administrador do sistema.")
+        st.title("🛡️ Auditoria de Segurança")
+        if hasattr(motor_seguranca, 'obter_relatorio_acessos'):
+            st.dataframe(motor_seguranca.obter_relatorio_acessos(), use_container_width=True)
