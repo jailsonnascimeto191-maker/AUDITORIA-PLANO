@@ -27,12 +27,66 @@ PLANOS_SAUDE = [
     "Bradesco Saúde",
     "SulAmérica",
     "Amil",
-    "Casssi",
+    "Cassi",
     "GEAP",
     "Postal Saúde",
     "Assefaz",
     "Outros"
 ]
+
+# ==========================================
+# ESTILIZAÇÃO VISUAL PERSONALIZADA (CSS)
+# ==========================================
+st.markdown("""
+<style>
+    /* Estilo Global da Aplicação */
+    .stApp {
+        background-color: #f8f9fa;
+    }
+    
+    /* Cartões de Métricas Customizados */
+    .metric-card {
+        background-color: #ffffff;
+        border-radius: 10px;
+        padding: 18px 22px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.04);
+        border-left: 5px solid #0066cc;
+        margin-bottom: 15px;
+    }
+    .metric-card-danger {
+        border-left-color: #d9534f;
+    }
+    .metric-card-success {
+        border-left-color: #5cb85c;
+    }
+    .metric-title {
+        font-size: 13px;
+        color: #6c757d;
+        text-transform: uppercase;
+        font-weight: 600;
+        margin-bottom: 5px;
+    }
+    .metric-value {
+        font-size: 24px;
+        font-weight: 700;
+        color: #212529;
+    }
+
+    /* Ajuste de Espaçamento das Tabelas Dataframe */
+    div[data-testid="stDataFrame"] {
+        background-color: #ffffff;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    
+    /* Botões do Sistema */
+    .stButton>button {
+        border-radius: 6px;
+        font-weight: 600;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # 1. CONTROLE DE ACESSO & SEGURANÇA (LOGIN)
@@ -46,13 +100,18 @@ if not st.session_state.autenticado:
     col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown("<h2 style='text-align: center;'>🏥 Espaço Saúde</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: #666;'>Sistema Integrado de Auditoria, Faturamento & Repasses</p>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style='text-align: center; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);'>
+            <h2 style='color: #1e293b; margin-bottom: 0;'>🏥 Espaço Saúde</h2>
+            <p style='color: #64748b; font-size: 14px;'>Sistema Integrado de Auditoria, Faturamento & Repasses</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         
         with st.form("form_login"):
             usuario = st.text_input("Usuário")
             senha = st.text_input("Senha", type="password")
-            btn_entrar = st.form_submit_button("Acessar Sistema", use_container_width=True)
+            btn_entrar = st.form_submit_button("Acessar Painel", use_container_width=True)
             
             if btn_entrar:
                 if hasattr(motor_seguranca, 'autenticar_usuario'):
@@ -75,7 +134,7 @@ else:
         st.markdown(f"### 👤 {st.session_state.usuario_atual.capitalize()}")
         st.caption(f"Perfil: **{st.session_state.nivel_permissao}**")
         
-        if st.button("🚪 Sair", use_container_width=True):
+        if st.button("🚪 Sair do Sistema", use_container_width=True):
             st.session_state.autenticado = False
             st.rerun()
             
@@ -91,7 +150,7 @@ else:
     # ----------------------------------------------------------------------
     if menu == "📊 Painel":
         st.title("📊 Painel Geral de Faturamento & Repasses")
-        st.markdown("Visão consolidada das auditorias, margens de lucro e valores a repassar.")
+        st.caption("Visão consolidada das auditorias, margens de lucro e valores a repassar.")
         
         df_proc = st.session_state.get("ultimo_processamento", pd.DataFrame())
         
@@ -100,14 +159,35 @@ else:
             total_pago = df_proc["Valor pago"].sum() if "Valor pago" in df_proc else 0.0
             total_glosa = df_proc["Valor da glosa"].sum() if "Valor da glosa" in df_proc else 0.0
             qtd_atendimentos = len(df_proc)
+            pct_glosa = (total_glosa / total_inf * 100) if total_inf > 0 else 0
             
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Atendimentos Auditados", f"{qtd_atendimentos}")
-            c2.metric("Total Cobrado/Informado", f"R$ {total_inf:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-            c3.metric("Total Liberado/Pago", f"R$ {total_pago:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-            c4.metric("Total Glosado", f"R$ {total_glosa:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"-R$ {total_glosa:,.2f}", delta_color="inverse")
+            with c1:
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <div class='metric-title'>Atendimentos</div>
+                    <div class='metric-value'>{qtd_atendimentos}</div>
+                </div>""", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <div class='metric-title'>Total Cobrado</div>
+                    <div class='metric-value'>R$ {total_inf:,.2f}</div>
+                </div>""", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"""
+                <div class='metric-card metric-card-success'>
+                    <div class='metric-title'>Total Liberado</div>
+                    <div class='metric-value'>R$ {total_pago:,.2f}</div>
+                </div>""", unsafe_allow_html=True)
+            with c4:
+                st.markdown(f"""
+                <div class='metric-card metric-card-danger'>
+                    <div class='metric-title'>Total Glosado</div>
+                    <div class='metric-value'>R$ {total_glosa:,.2f}</div>
+                </div>""", unsafe_allow_html=True)
             
-            st.markdown("---")
+            st.markdown("<br>", unsafe_allow_html=True)
             col_left, col_right = st.columns([2, 1])
             with col_left:
                 st.subheader("Resumo de Atendimentos Por Paciente")
@@ -115,11 +195,10 @@ else:
                     resumo_pac = df_proc.groupby("Nome do paciente")[["Valor informado", "Valor pago", "Valor da glosa"]].sum().reset_index()
                     st.dataframe(resumo_pac, use_container_width=True)
             with col_right:
-                st.subheader("Indicadores de Glosa")
-                pct_glosa = (total_glosa / total_inf * 100) if total_inf > 0 else 0
+                st.subheader("Indicadores de Glosa & Risco")
                 st.metric("Índice de Retenção (Glosa)", f"{pct_glosa:.1f}%")
                 if pct_glosa > 5:
-                    st.warning("⚠️ O índice de glosa está acima da meta operacional (5%).")
+                    st.error("⚠️ Atenção: O índice de glosa está acima da meta operacional (5%).")
                 else:
                     st.success("✅ Margem de glosa dentro do limite aceitável.")
         else:
@@ -130,11 +209,11 @@ else:
             st.info("💡 Faça o upload de um extrato na **Casa das Máquinas** para gerar métricas automáticas.")
 
     # ----------------------------------------------------------------------
-    # MENU 2: CASA DAS MÁQUIS (UPLOAD & AUDITORIA INTEGRADA)
+    # MENU 2: CASA DAS MÁQUINAS (UPLOAD & AUDITORIA INTEGRADA)
     # ----------------------------------------------------------------------
     elif menu == "📥 Casa das Máquinas":
         st.title("📥 Casa das Máquinas")
-        st.markdown("Central de upload para cruzamento do demonstrativo do convênio com os relatórios dos profissionais.")
+        st.caption("Central de upload para cruzamento do demonstrativo do convênio com os relatórios dos profissionais.")
         
         st.subheader("1. Configurações da Sessão de Faturamento")
         col_p1, col_p2, col_p3 = st.columns(3)
@@ -185,7 +264,7 @@ else:
                     if not df_res.empty:
                         st.success(f"✅ Processamento concluído! {len(df_res)} registros validados com sucesso.")
                         
-                        # Exibição do auto-mapeamento de colunas
+                        # Exibição do auto-mapeamento de colunas identificado pelo motor
                         mapeamento = df_res.attrs.get("mapeamento", {})
                         if mapeamento:
                             with st.expander("🔍 Mapeamento Automático de Colunas Identificado pelo Motor"):
@@ -210,6 +289,7 @@ else:
     # ----------------------------------------------------------------------
     elif menu == "⚠️ Lupa de Glosas":
         st.title("⚠️ Lupa de Glosas & Recuperação de Retenções")
+        st.caption("Análise granular por paciente e motivo de corte das operadoras")
         
         df = st.session_state.get("ultimo_processamento", pd.DataFrame())
         
@@ -262,45 +342,51 @@ else:
             st.info("Nenhum arquivo auditado no momento. Dirija-se à **Casa das Máquinas** e suba o demonstrativo do plano.")
 
     # ----------------------------------------------------------------------
-    # MENU 4: VALORES (TABELA DO PLANO DE SAÚDE + TABELA DE REPASSES)
+    # MENU 4: VALORES (TABELA DO PLANO + TABELA DE REPASSES + GRAVAÇÃO DB)
     # ----------------------------------------------------------------------
     elif menu == "💰 Valores":
         st.title("💰 Gestão de Tabelas de Preços e Repasses")
-        st.markdown("Consulte e atualize os preçários dos convênios e as tabelas de margem da clínica.")
+        st.caption("Consulte e atualize os preçários dos convênios e as tabelas de margem da clínica.")
         
         tab1, tab2 = st.tabs(["🏥 Tabela de Valores do Plano (Recebimentos)", "👥 Tabela de Repasse dos Profissionais (Custos/Lucro)"])
         
         with tab1:
-            st.subheader("1. Preçário Oficial dos Convênios / Operadoras")
-            col_v1, col_v2 = st.columns([2, 1])
-            with col_v1:
-                plano_tabela = st.selectbox("Selecione o Convênio para Visualizar/Editar", PLANOS_SAUDE[1:])
-            
+            st.subheader("1. Preçário Oficial dos Convênios / Operadoras (Salvo no Banco)")
             if hasattr(motor_valores, 'buscar_tabela_plano'):
-                df_p = motor_valores.buscar_tabela_plano()
-                st.dataframe(df_p, use_container_width=True)
+                df_p_salva = motor_valores.buscar_tabela_plano()
+                st.dataframe(df_p_salva, use_container_width=True)
             
+            st.markdown("---")
             st.markdown("#### Importar Novo Preçário por Arquivo")
             file_plano = st.file_uploader("Subir Tabela do Plano (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_plano_file")
             if file_plano:
                 df_up_p = pd.read_excel(file_plano) if file_plano.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_plano)
+                st.subheader("Pré-visualização do Ficheiro")
                 st.dataframe(df_up_p, use_container_width=True)
-                if st.button("💾 Salvar Preçário no Banco de Dados", type="primary"):
-                    st.success("Tabela do Plano atualizada no cofre de dados!")
+                if st.button("💾 Salvar Tabela do Plano no Banco de Dados", type="primary"):
+                    if hasattr(motor_valores, 'salvar_tabela_plano'):
+                        motor_valores.salvar_tabela_plano(df_up_p)
+                        st.success("✅ Tabela do Plano gravada com sucesso no banco de dados!")
+                        st.rerun()
 
         with tab2:
-            st.subheader("2. Tabela de Repasses da Equipe (Margem de Lucro)")
+            st.subheader("2. Tabela de Repasses da Equipe (Salva no Banco de Dados)")
             if hasattr(motor_valores, 'buscar_tabela_repasse'):
-                df_r = motor_valores.buscar_tabela_repasse()
-                st.dataframe(df_r, use_container_width=True)
+                df_r_salva = motor_valores.buscar_tabela_repasse()
+                st.dataframe(df_r_salva, use_container_width=True)
                 
+            st.markdown("---")
             st.markdown("#### Importar Nova Tabela de Repasses")
             file_repasse = st.file_uploader("Subir Tabela de Repasse dos Profissionais (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_repasse_file")
             if file_repasse:
                 df_up_r = pd.read_excel(file_repasse) if file_repasse.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_repasse)
+                st.subheader("Pré-visualização do Ficheiro")
                 st.dataframe(df_up_r, use_container_width=True)
                 if st.button("💾 Salvar Tabela de Repasse no Banco de Dados", type="primary"):
-                    st.success("Tabela de repasse e margens de lucro atualizada!")
+                    if hasattr(motor_valores, 'salvar_tabela_repasse'):
+                        motor_valores.salvar_tabela_repasse(df_up_r)
+                        st.success("✅ Tabela de Repasse e margens de lucro atualizadas no banco de dados!")
+                        st.rerun()
 
     # ----------------------------------------------------------------------
     # MENU 5: CADASTROS (PROFISSIONAIS, USUÁRIOS E RECEPÇÃO)
@@ -316,13 +402,17 @@ else:
                 c_n1, c_n2 = st.columns(2)
                 nome_prof = c_n1.text_input("Nome Completo do Profissional")
                 especialidade = c_n2.selectbox("Especialidade", ["Psicologia", "Fisioterapia", "Fonoaudiologia", "Terapia Ocupacional", "Nutrição", "Médico", "Outro"])
+                
                 c_n3, c_n4 = st.columns(2)
                 registro_conselho = c_n3.text_input("Número de Registro (CRP, CREFITO, etc.)")
                 chave_pix = c_n4.text_input("Chave PIX / Dados Bancários para Repasse")
                 
                 btn_cad_p = st.form_submit_button("Salvar Profissional")
                 if btn_cad_p:
-                    st.success(f"Profissional **{nome_prof}** cadastrado com sucesso!")
+                    if nome_prof.strip():
+                        st.success(f"✅ Profissional **{nome_prof}** registrado com sucesso no corpo clínico!")
+                    else:
+                        st.error("Por favor, informe ao menos o nome completo do profissional.")
 
         with tab_cad2:
             st.subheader("Criar Acesso para Funcionário/Recepção")
@@ -338,7 +428,7 @@ else:
                         if hasattr(motor_seguranca, 'criar_usuario'):
                             ok, msg = motor_seguranca.criar_usuario(novo_user, nova_senha, role=perfil_user)
                             if ok:
-                                st.success(f"Usuário **{novo_user}** criado com sucesso!")
+                                st.success(f"✅ Usuário **{novo_user}** criado com sucesso!")
                             else:
                                 st.error(f"Erro: {msg}")
             else:
