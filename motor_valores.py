@@ -1,4 +1,4 @@
-"""
+""""""
 Motor de Valores e Tabelas de Preços.
 Gerencia a leitura multi-abas de especialidades, valores do plano e repasses da equipe.
 """
@@ -115,54 +115,72 @@ def salvar_tabela_repasse(df):
 def processar_e_salvar_excel_multi_abas(arquivo_upload):
     """
     Lê o Excel multi-abas enviado, trata o layout específico das tabelas da clínica,
-    preenche células mescladas (Forward Fill) e salva no banco de dados.
+    preenche células mescladas (Forward Fill) e salva no banco de dados com validação rigorosa de erros.
     """
     try:
         arquivo_upload.seek(0)
         dados = arquivo_upload.read()
-        xls = pd.ExcelFile(io.BytesIO(dados))
+        try:
+            xls = pd.ExcelFile(io.BytesIO(dados))
+        except Exception as e:
+            return False, f"O ficheiro enviado não é um Excel válido ou está corrompido. Detalhe técnico: {str(e)}"
         
         dfs_consolidados = []
         conexoes_especialidades = set()
+        abas_com_erro = []
 
         for sheet_name in xls.sheet_names:
-            df_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None, dtype=object)
-            if df_raw.empty:
-                continue
+            try:
+                df_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None, dtype=object)
+                if df_raw.empty:
+                    continue
 
-            cab_idx = None
-            for idx, row in df_raw.iterrows():
-                linha_str = " ".join([str(val).upper() for val in row.values if pd.notnull(val)])
-                if "PLANO" in linha_str or "VALOR PLANO" in linha_str:
-                    cab_idx = idx
-                    break
+                # Localiza a linha do cabeçalho real na aba
+                cab_idx = None
+                for idx, row in df_raw.iterrows():
+                    linha_str = " ".join([str(val).upper() for val in row.values if pd.notnull(val)])
+                    if "PLANO" in linha_str or "VALOR PLANO" in linha_str:
+                        cab_idx = idx
+                        break
 
-            if cab_idx is not None:
-                df_aba = df_raw.iloc[cab_idx + 1:].copy()
-                df_aba = df_aba.iloc[:, :4]
-                df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
-            else:
-                df_aba = df_raw.iloc[:, :4].copy()
-                df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
+                if cab_idx is not None:
+                    df_aba = df_raw.iloc[cab_idx + 1:].copy()
+                    df_aba = df_aba.iloc[:, :4]
+                    df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
+                else:
+                    # Se não achar o cabeçalho exato, tenta assumir as 4 primeiras colunas
+                    df_aba = df_raw.iloc[:, :4].copy()
+                    if df_aba.shape[1] >= 4:
+                        df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
+                    else:
+                        abas_com_erro.append(sheet_name)
+                        continue
 
-            df_aba["especialidade"] = sheet_name.strip().upper()
-            conexoes_especialidades.add(sheet_name.strip().upper())
+                # Atribui o nome da aba como a especialidade exata
+                esp_nome = sheet_name.strip().upper()
+                df_aba["especialidade"] = esp_nome
+                conexoes_especialidades.add(esp_nome)
 
-            df_aba["plano"] = df_aba["plano"].replace(["", "nan", "None"], pd.NA).ffill()
-            df_aba = df_aba.dropna(subset=["valor_plano"])
-            df_aba = df_aba[~df_aba["plano"].astype(str).str.contains("PLANO DE SAÚDE", na=False, case=False)]
+                # Preenchimento inteligente para células mescladas (Forward Fill no Plano)
+                df_aba["plano"] = df_aba["plano"].replace(["", "nan", "None"], pd.NA).ffill()
+                df_aba = df_aba.dropna(subset=["valor_plano"])
+                df_aba = df_aba[~df_aba["plano"].astype(str).str.contains("PLANO DE SAÚDE", na=False, case=False)]
 
-            df_aba["valor_plano"] = pd.to_numeric(df_aba["valor_plano"], errors="coerce").fillna(0.0)
-            df_aba["valor_profissional"] = pd.to_numeric(df_aba["valor_profissional"], errors="coerce").fillna(0.0)
-            df_aba["tempo_atendimento"] = df_aba["tempo_atendimento"].astype(str).str.strip()
+                # Conversão numérica segura
+                df_aba["valor_plano"] = pd.to_numeric(df_aba["valor_plano"], errors="coerce").fillna(0.0)
+                df_aba["valor_profissional"] = pd.to_numeric(df_aba["valor_profissional"], errors="coerce").fillna(0.0)
+                df_aba["tempo_atendimento"] = df_aba["tempo_atendimento"].astype(str).str.strip()
 
-            dfs_consolidados.append(df_aba)
+                dfs_consolidados.append(df_aba)
+            except Exception as ex:
+                abas_com_erro.append(f"{sheet_name} ({str(ex)})")
 
         if not dfs_consolidados:
-            return False, "⚠️ Erro de leitura: O ficheiro Excel não contém dados válidos nas abas."
+            return False, f"⚠️ Nenhuma regra de valor foi extraída. Verifique se o formato das colunas está correto. Abas com falha: {abas_com_erro}"
 
         df_final = pd.concat(dfs_consolidados, ignore_index=True)
 
+        # Gravação no Banco de Dados
         conn = sqlite3.connect(DB_VALORES)
         cursor = conn.cursor()
         for esp in conexoes_especialidades:
@@ -172,7 +190,12 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
 
         salvar_tabela_repasse(df_final)
 
-        return True, f"✅ Ficheiro lido com sucesso! {len(df_final)} regras de valores importadas de {len(conexoes_especialidades)} abas ({', '.join(conexoes_especialidades)})."
+        msg_retorno = f"✅ Importação Master Concluída! {len(df_final)} registros processados de {len(conexoes_especialidades)} abas ({', '.join(conexoes_especialidades)})."
+        if abas_com_erro:
+            msg_retorno += f" ⚠️ Aviso: As seguintes abas apresentaram divergência de estrutura e foram ignoradas: {abas_com_erro}."
+
+        return True, msg_retorno
 
     except Exception as e:
-        return False, f"❌ Erro crítico ao processar o ficheiro Excel: {str(e)}"
+        return False, f"❌ Erro crítico ao processar a planilha multi-abas: {str(e)}. Onde buscar a solução: Certifique-se de que o ficheiro Excel contém as abas nomeadas com as especialidades e colunas de valores válidas."
+2. Atualizar o app.py
