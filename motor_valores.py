@@ -76,7 +76,7 @@ def buscar_tabela_plano():
     return df
 
 def buscar_tabela_repasse():
-    conn = sqlite3.connect(DB_VALores if 'DB_VALORES' in globals() else "valores_clinica.db")
+    conn = sqlite3.connect(DB_VALORES)
     try:
         df = pd.read_sql_query("SELECT * FROM tabela_valores_completa", conn)
         if not df.empty and 'especialidade' in df.columns:
