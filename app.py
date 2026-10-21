@@ -92,7 +92,6 @@ if not st.session_state.autenticado:
 # 2. SISTEMA COMPLETO (ÁREA RESTRITA)
 # ==========================================
 else:
-    # Definição de menus baseados no nível de permissão
     menus_disponiveis = ["📊 Painel", "📥 Casa das Máquinas", "⚠️ Lupa de Glosas"]
     if st.session_state.nivel_permissao == "Administrador":
         menus_disponiveis.extend(["💰 Valores", "👥 Cadastros", "🛡️ Acessos"])
@@ -277,7 +276,7 @@ else:
     # ----------------------------------------------------------------------
     elif menu == "💰 Valores":
         st.title("💰 Gestão de Tabelas de Preços e Repasses")
-        st.info("💡 **Atenção:** As tabelas de repasse agora são geridas de forma individualizada por especialidade.")
+        st.info("💡 **Atenção:** Importe a sua planilha oficial da clínica abaixo. O sistema lerá todas as abas automaticamente e distribuirá cada valor para a sua respectiva especialidade.")
         
         tab1, tab2 = st.tabs(["🏥 Tabela de Valores do Plano (Recebimentos)", "👥 Tabela de Repasse dos Profissionais (Custos/Lucro)"])
         
@@ -293,40 +292,44 @@ else:
                 st.success("✅ Tabela do Plano salva no banco de dados com sucesso!")
                 st.rerun()
 
-            st.markdown("---")
-            with st.expander("Importar Novo Preçário Oficial por Arquivo em Massa"):
-                file_plano = st.file_uploader("Subir Tabela do Plano (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_plano_file")
-                if file_plano:
-                    df_up_p = pd.read_excel(file_plano) if file_plano.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_plano)
-                    st.dataframe(df_up_p, use_container_width=True)
-                    if st.button("Substituir Tabela do Plano pelo Arquivo Carregado", type="primary"):
-                        motor_valores.salvar_tabela_plano(df_up_p)
-                        st.success("✅ Tabela do Plano atualizada via arquivo!")
-                        st.rerun()
-
         with tab2:
-            st.subheader("2. Tabela de Repasses por Especialidade")
+            st.subheader("2. Tabela de Repasses por Especialidade (Multi-abas)")
+            
+            # 📥 UPLOAD INTELIGENTE DA PLANILHA MULTI-ABAS
+            st.markdown("#### 📥 Importação em Massa (Planilha com Abas por Especialidade)")
+            file_repasse_multi = st.file_uploader("Subir Planilha Oficial da Clínica (Excel)", type=["xlsx", "xls"], key="t_repasse_multi_file")
+            if file_repasse_multi:
+                if st.button("🚀 Processar e Distribuir Todas as Abas no Banco", type="primary"):
+                    with st.spinner("A ler todas as abas do Excel e a separar por especialidade..."):
+                        sucesso, msg = motor_valores.processar_e_salvar_excel_multi_abas(file_repasse_multi)
+                        if sucesso:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ **Erro na importação:** {msg}")
+
+            st.markdown("---")
             
             # Buscar a lista dinâmica de especialidades do banco
             especialidades_db = motor_valores.buscar_especialidades() if hasattr(motor_valores, 'buscar_especialidades') else ["Geral"]
             
             col_esp1, col_esp2 = st.columns([3, 1])
             with col_esp1:
-                esp_selecionada = st.selectbox("Selecione a Especialidade para configurar os repasses:", especialidades_db)
+                esp_selecionada = st.selectbox("Visualizar e Editar Especialidade:", especialidades_db)
             with col_esp2:
                 st.markdown("<br>", unsafe_allow_html=True)
                 with st.popover("➕ Nova Especialidade"):
                     st.markdown("Cadastrar no Banco")
                     nova_esp = st.text_input("Nome da Especialidade")
-                    if st.button("Gravar", type="primary"):
+                    if st.button("Gravar Nova", type="primary"):
                         if nova_esp.strip():
                             motor_valores.adicionar_especialidade(nova_esp)
+                            st.success("Cadastrada!")
                             st.rerun()
             
             # Buscar a tabela principal de repasses
             df_r_salva = motor_valores.buscar_tabela_repasse() if hasattr(motor_valores, 'buscar_tabela_repasse') else pd.DataFrame()
             
-            # CORREÇÃO APLICADA: Garante que a coluna 'especialidade' existe para evitar KeyError
             if not df_r_salva.empty and 'especialidade' not in df_r_salva.columns:
                 df_r_salva['especialidade'] = esp_selecionada
 
@@ -334,13 +337,13 @@ else:
                 df_r_salva = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
             
             # Filtrar a tabela apenas para a especialidade selecionada
-            df_esp_atual = df_r_salva[df_r_salva['especialidade'] == esp_selecionada].copy()
+            df_esp_atual = df_r_salva[df_r_salva['especialidade'].astype(str).str.upper() == str(esp_selecionada).upper()].copy()
             if df_esp_atual.empty:
                 df_esp_atual = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
             
             df_esp_atual['especialidade'] = esp_selecionada
 
-            st.markdown(f"**Valores de Repasse: {esp_selecionada}**")
+            st.markdown(f"**Valores de Repasse Atuais: {esp_selecionada}**")
             df_editado_r = st.data_editor(
                 df_esp_atual, 
                 num_rows="dynamic", 
@@ -353,28 +356,12 @@ else:
             
             if st.button(f"💾 Salvar Tabela Exclusiva de {esp_selecionada}", type="primary"):
                 df_editado_r['especialidade'] = esp_selecionada
-                df_resto = df_r_salva[df_r_salva['especialidade'] != esp_selecionada]
+                df_resto = df_r_salva[df_r_salva['especialidade'].astype(str).str.upper() != str(esp_selecionada).upper()]
                 df_final = pd.concat([df_resto, df_editado_r], ignore_index=True)
                 
                 motor_valores.salvar_tabela_repasse(df_final)
-                st.success(f"✅ Tabela de repasse de {esp_selecionada} salva no banco de dados!")
+                st.success(f"✅ Tabela de repasse de {esp_selecionada} salva no banco de dados com sucesso!")
                 st.rerun()
-
-            st.markdown("---")
-            with st.expander("Importar Tabela Geral de Repasses por Arquivo (Substitui todas as especialidades)"):
-                file_repasse = st.file_uploader("Subir Master Tabela (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_repasse_file")
-                if file_repasse:
-                    df_up_r = pd.read_excel(file_repasse) if file_repasse.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_repasse)
-                    
-                    # Correção aplicada também na importação via arquivo
-                    if not df_up_r.empty and 'especialidade' not in df_up_r.columns:
-                        df_up_r['especialidade'] = esp_selecionada
-
-                    st.dataframe(df_up_r, use_container_width=True)
-                    if st.button("Substituir o Banco de Repasses pelo Arquivo", key="btn_rep_arq", type="primary"):
-                        motor_valores.salvar_tabela_repasse(df_up_r)
-                        st.success("✅ Banco de Repasses Master atualizado!")
-                        st.rerun()
 
     # ----------------------------------------------------------------------
     # MENU 5: CADASTROS (PROFISSIONAIS, USUÁRIOS E RECEPÇÃO)
