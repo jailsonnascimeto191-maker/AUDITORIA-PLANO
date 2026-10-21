@@ -325,6 +325,11 @@ else:
             
             # Buscar a tabela principal de repasses
             df_r_salva = motor_valores.buscar_tabela_repasse() if hasattr(motor_valores, 'buscar_tabela_repasse') else pd.DataFrame()
+            
+            # CORREÇÃO APLICADA: Garante que a coluna 'especialidade' existe para evitar KeyError
+            if not df_r_salva.empty and 'especialidade' not in df_r_salva.columns:
+                df_r_salva['especialidade'] = esp_selecionada
+
             if df_r_salva.empty:
                 df_r_salva = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
             
@@ -333,7 +338,6 @@ else:
             if df_esp_atual.empty:
                 df_esp_atual = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
             
-            # Travar a coluna "especialidade" para evitar erros de digitação do usuário
             df_esp_atual['especialidade'] = esp_selecionada
 
             st.markdown(f"**Valores de Repasse: {esp_selecionada}**")
@@ -348,11 +352,8 @@ else:
             )
             
             if st.button(f"💾 Salvar Tabela Exclusiva de {esp_selecionada}", type="primary"):
-                # Garante que a especialidade nas linhas novas não ficou em branco
                 df_editado_r['especialidade'] = esp_selecionada
-                # Remove as linhas antigas dessa especialidade do banco principal
                 df_resto = df_r_salva[df_r_salva['especialidade'] != esp_selecionada]
-                # Une o resto do banco com a edição atual
                 df_final = pd.concat([df_resto, df_editado_r], ignore_index=True)
                 
                 motor_valores.salvar_tabela_repasse(df_final)
@@ -364,6 +365,11 @@ else:
                 file_repasse = st.file_uploader("Subir Master Tabela (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_repasse_file")
                 if file_repasse:
                     df_up_r = pd.read_excel(file_repasse) if file_repasse.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_repasse)
+                    
+                    # Correção aplicada também na importação via arquivo
+                    if not df_up_r.empty and 'especialidade' not in df_up_r.columns:
+                        df_up_r['especialidade'] = esp_selecionada
+
                     st.dataframe(df_up_r, use_container_width=True)
                     if st.button("Substituir o Banco de Repasses pelo Arquivo", key="btn_rep_arq", type="primary"):
                         motor_valores.salvar_tabela_repasse(df_up_r)
@@ -378,7 +384,6 @@ else:
         
         tab_cad1, tab_cad2 = st.tabs(["Corpo Clínico & Profissionais", "🔐 Gestão de Usuários do Sistema"])
         
-        # Puxa a mesma lista do banco gerada na aba Valores
         especialidades_db = motor_valores.buscar_especialidades() if hasattr(motor_valores, 'buscar_especialidades') else ["Geral"]
 
         with tab_cad1:
@@ -386,7 +391,6 @@ else:
             with st.form("form_cad_prof"):
                 c_n1, c_n2 = st.columns(2)
                 nome_prof = c_n1.text_input("Nome Completo do Profissional")
-                # Dropdown dinâmico alimentado pelo banco de especialidades
                 especialidade_prof = c_n2.selectbox("Especialidade do Profissional", especialidades_db)
                 
                 c_n3, c_n4 = st.columns(2)
