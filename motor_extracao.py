@@ -1,5 +1,10 @@
 """
 Extrator inteligente de glosas com Forward Fill para dados hierárquicos e Trava de Quantidades.
+
+Uso principal (chamado pelo app):
+    df, erro = extrair_glosas_de_arquivo(arquivo, plano="Unimed Recife", somente_glosas=True)
+O DataFrame retornado traz em df.attrs: "mapeamento" (coluna encontrada para cada campo)
+e "operadora" (plano escolhido ou detectado pelo nome do arquivo).
 """
 import csv
 import io
@@ -21,6 +26,11 @@ try:
 except ImportError:
     docx = None
 
+try:  # opcional: usado só para detectar a operadora pelo nome do arquivo
+    from motor_utilitarios import extrair_nome_operadora
+except ImportError:
+    extrair_nome_operadora = None
+
 COLUNAS_PADRAO_GLOSAS = [
     "Data do evento",
     "Protocolo",
@@ -33,6 +43,8 @@ COLUNAS_PADRAO_GLOSAS = [
     "Valor da glosa",
     "Motivo da glosa",
 ]
+
+PLANO_AUTOMATICO = "Identificar pelo arquivo"
 
 # --------------------------------------------------------------------------
 # Configuração dos campos (com Trava de Colunas de Quantidade)
@@ -110,6 +122,7 @@ CAMPOS = {
 
 CAMPOS_DINHEIRO = ["Valor informado", "Valor pago", "Valor da glosa"]
 LIMIAR_ATRIBUICAO = 35
+MAX_COLUNAS_NUMERICAS_LIVRES = 8  # limita as permutações testadas (evita lentidão)
 
 # --------------------------------------------------------------------------
 # Utilidades de texto
@@ -119,9 +132,13 @@ _RE_DIN = re.compile(r"^(R\$\s*)?-?\(?\d{1,3}(\.\d{3})*,\d{1,2}\)?$|^(R\$\s*)?-?
 _RE_COD = re.compile(r"^(\d{6,10}|\d{1,2}\.\d{2}\.\d{2}\.\d{2}-?\d?|\d{2}\.\d{3}\.\d{3}-?\d?)$")
 _RE_NOME = re.compile(r"^[^\W\d_]+(?:[ '.-]+[^\W\d_]+)+$")
 _RE_DIN_TEXTO = re.compile(r"\d{1,3}(?:\.\d{3})*,\d{2}")
+# Protocolo/guia no texto corrido: exige pelo menos um dígito para não capturar palavras
+_RE_PROTOCOLO = re.compile(r"(?:protocolo|prot\.)[\s:nº°.]*((?=[A-Z0-9.-]*\d)[A-Z0-9.-]{5,20})", re.I)
+_RE_GUIA = re.compile(r"(?:guia|senha|doc\.)[\s:nº°.]*((?=[A-Z0-9.-]*\d)[A-Z0-9.-]{5,20})", re.I)
 _PALAVRAS_PROC = {"CONSULTA", "EXAME", "SESSAO", "PROCEDIMENTO", "TERAPIA", "HEMOGRAMA",
                   "RADIOGRAFIA", "ULTRASSONOGRAFIA", "TOMOGRAFIA", "RESSONANCIA", "CIRURGIA",
                   "AVALIACAO", "ATENDIMENTO", "DIARIA", "TAXA", "MATERIAL", "MEDICAMENTO"}
+
 
 def _norm(s):
     s = unicodedata.normalize("NFKD", str(s))
@@ -129,23 +146,31 @@ def _norm(s):
     s = re.sub(r"[^A-Z0-9]+", " ", s)
     return s.strip()
 
+
 def _txt(v):
-    if v is None: return ""
+    if v is None:
+        return ""
     try:
-        if pd.isnull(v): return ""
-    except (TypeError, ValueError): pass
+        if pd.isnull(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
     if isinstance(v, float) and v.is_integer() and abs(v) >= 100000:
         return str(int(v))
     s = str(v).strip()
     return "" if s.lower() in ("nan", "none", "nat") else s
 
+
 def limpar_valor_monetario(val):
     try:
-        if pd.isnull(val): return 0.0
-    except (TypeError, ValueError): pass
-    if isinstance(val, (int, float)): return float(val)
+        if pd.isnull(val):
+            return 0.0
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, (int, float)):
+        return float(val)
     s = str(val).strip()
-    negativo = s.startswith("(") and s.endswith(")") or s.startswith("-")
+    negativo = (s.startswith("(") and s.endswith(")")) or s.startswith("-")
     s = s.replace("R$", "").strip()
     if "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".")
@@ -154,70 +179,96 @@ def limpar_valor_monetario(val):
     elif re.fullmatch(r"-?\d{1,3}(\.\d{3})+", s):
         s = s.replace(".", "")
     s = re.sub(r"[^0-9.]", "", s)
-    try: v = float(s) if s else 0.0
-    except ValueError: v = 0.0
+    try:
+        v = float(s) if s else 0.0
+    except ValueError:
+        v = 0.0
     return -v if negativo else v
+
 
 def padronizar_data(val):
     s = _txt(val)
-    if not s: return "-"
+    if not s:
+        return "-"
     try:
         if re.match(r"^\d{4}-\d{2}-\d{2}", s):
             dt = pd.to_datetime(s[:10], errors="coerce")
         else:
             m = _RE_DATA.search(s)
             dt = pd.to_datetime(m.group(1) if m else s, errors="coerce", dayfirst=True)
-        if pd.notnull(dt): return dt.strftime("%d/%m/%Y")
-    except Exception: pass
+        if pd.notnull(dt):
+            return dt.strftime("%d/%m/%Y")
+    except Exception:
+        pass
     return "-"
 
+
 def _score_nome(h_norm, campo):
-    if not h_norm: return 0.0
+    if not h_norm:
+        return 0.0
     cfg = CAMPOS[campo]
     hw = h_norm.split()
     hc = h_norm.replace(" ", "")
-    if any(w.startswith(e) for w in hw for e in cfg["excl"]): return 0.0
+    if any(w.startswith(e) for w in hw for e in cfg["excl"]):
+        return 0.0
     melhor = 0.0
     for termo in cfg["sin"]:
         tw = termo.split()
         tc = termo.replace(" ", "")
-        if h_norm == termo: s = 100.0
-        elif hc == tc: s = 95.0
-        elif all(w in hw for w in tw): s = min(95.0, 70.0 + 8 * len(tw))
-        elif len(tc) >= 6 and tc in hc: s = 75.0
+        if h_norm == termo:
+            s = 100.0
+        elif hc == tc:
+            s = 95.0
+        elif all(w in hw for w in tw):
+            s = min(95.0, 70.0 + 8 * len(tw))
+        elif len(tc) >= 6 and tc in hc:
+            s = 75.0
         else:
             r = SequenceMatcher(None, hc, tc).ratio()
             s = 60.0 * r if (r >= 0.84 and len(tc) >= 5) else 0.0
         melhor = max(melhor, s)
     return melhor
 
+
 def _perfil(serie):
     pares = [(v, _txt(v)) for v in serie.tolist()]
     pares = [(v, t) for v, t in pares if t][:60]
     amostra = [t for _, t in pares]
     perfil = dict(data=0.0, dinheiro=0.0, codigo=0.0, nome=0.0, texto=0.0, id=0.0, tam=0.0, n=len(amostra))
-    if not amostra: return perfil
+    if not amostra:
+        return perfil
     n = len(amostra)
     c = dict(data=0, dinheiro=0, codigo=0, nome=0, texto=0)
     for orig, v in pares:
         if isinstance(orig, (int, float)) and not isinstance(orig, bool):
-            if float(orig).is_integer() and abs(orig) >= 100000: c["codigo"] += 1
-            else: c["dinheiro"] += 1
-        elif _RE_DATA.search(v) and not _RE_DIN.match(v): c["data"] += 1
-        elif _RE_COD.match(v.replace(" ", "")): c["codigo"] += 1
-        elif _RE_DIN.match(v): c["dinheiro"] += 1
-        elif re.fullmatch(r"-?\d{1,5}", v): c["dinheiro"] += 1
+            if float(orig).is_integer() and abs(orig) >= 100000:
+                c["codigo"] += 1
+            else:
+                c["dinheiro"] += 1
+        elif _RE_DATA.search(v) and not _RE_DIN.match(v):
+            c["data"] += 1
+        elif _RE_COD.match(v.replace(" ", "")):
+            c["codigo"] += 1
+        elif _RE_DIN.match(v):
+            c["dinheiro"] += 1
+        elif re.fullmatch(r"-?\d{1,5}", v):
+            c["dinheiro"] += 1
         elif any(ch.isalpha() for ch in v):
             c["texto"] += 1
             palavras = _norm(v).split()
             if (_RE_NOME.match(v) and 6 <= len(v) <= 70 and 2 <= len(palavras) <= 6
                     and not (set(palavras) & _PALAVRAS_PROC)):
                 c["nome"] += 1
-    for k, v in c.items(): perfil[k] = v / n
+    for k, v in c.items():
+        perfil[k] = v / n
     perfil["tam"] = sum(len(v) for v in amostra) / n
-    perfil["id"] = sum(1 for v in amostra if re.fullmatch(r"[\w./-]{4,25}", v) and any(ch.isdigit() for ch in v)
-                       and not _RE_DATA.search(v) and not _RE_DIN.match(v)) / n
+    perfil["id"] = sum(
+        1 for v in amostra
+        if re.fullmatch(r"[\w./-]{4,25}", v) and any(ch.isdigit() for ch in v)
+        and not _RE_DATA.search(v) and not _RE_DIN.match(v)
+    ) / n
     return perfil
+
 
 def _score_campo(campo, h_norm, perfil):
     tipo = CAMPOS[campo]["tipo"]
@@ -225,26 +276,37 @@ def _score_campo(campo, h_norm, perfil):
     nome = _score_nome(h_norm, campo)
     compat = 0.3 + 0.7 * frac
     score = nome * compat
-    if tipo in ("data", "codigo", "nome"): score += 50.0 * frac
-    elif tipo == "texto": score += 25.0 * frac
+    if tipo in ("data", "codigo", "nome"):
+        score += 50.0 * frac
+    elif tipo == "texto":
+        score += 25.0 * frac
     return score
+
 
 def _preparar_tabela(raw):
     raw = raw.copy().dropna(how="all").dropna(axis=1, how="all").reset_index(drop=True)
     raw.columns = range(raw.shape[1])
-    if raw.empty: return raw
+    if raw.empty:
+        return raw
 
     melhor_i, melhor_hits = None, 0
     for i in range(min(len(raw), 30)):
-        hits = sum(1 for cel in raw.iloc[i].tolist() if _txt(cel) and not re.fullmatch(r"[\d.,/ R$-]+", _txt(cel)) 
-                   and any(_score_nome(_norm(_txt(cel)), campo) >= 70 for campo in CAMPOS))
-        if hits > melhor_hits: melhor_i, melhor_hits = i, hits
+        hits = sum(
+            1 for cel in raw.iloc[i].tolist()
+            if _txt(cel) and not re.fullmatch(r"[\d.,/ R$-]+", _txt(cel))
+            and any(_score_nome(_norm(_txt(cel)), campo) >= 70 for campo in CAMPOS)
+        )
+        if hits > melhor_hits:
+            melhor_i, melhor_hits = i, hits
 
-    if melhor_hits >= 2: cab_i = melhor_i
+    if melhor_hits >= 2:
+        cab_i = melhor_i
     else:
         primeira = [_txt(c) for c in raw.iloc[0].tolist() if _txt(c)]
-        if primeira and all(not re.fullmatch(r"[\d.,/ R$-]+", t) for t in primeira) and len(primeira) >= 3: cab_i = 0
-        else: cab_i = None
+        if primeira and all(not re.fullmatch(r"[\d.,/ R$-]+", t) for t in primeira) and len(primeira) >= 3:
+            cab_i = 0
+        else:
+            cab_i = None
 
     if cab_i is None:
         df = raw.copy()
@@ -260,20 +322,34 @@ def _preparar_tabela(raw):
     df.columns = nomes
     return _remover_totais(df)
 
+
 def _remover_totais(df):
     def eh_total(linha):
         for cel in linha.tolist():
-            if re.match(r"^(SUB )?TOTAL( GERAL)?$|^TOTAIS$|^TOTAL (GERAL|DA|DO|DOS|DAS)\b", _norm(_txt(cel))): return True
+            if re.match(r"^(SUB )?TOTAL( GERAL)?$|^TOTAIS$|^TOTAL (GERAL|DA|DO|DOS|DAS)\b", _norm(_txt(cel))):
+                return True
         return False
-    if df.empty: return df
+
+    if df.empty:
+        return df
     return df[~df.apply(eh_total, axis=1)].reset_index(drop=True)
 
-def _consistencia(df, c_inf, c_pago, c_glosa):
-    a = df[c_inf].apply(limpar_valor_monetario)
-    b = df[c_pago].apply(limpar_valor_monetario)
-    g = df[c_glosa].apply(limpar_valor_monetario)
-    if len(a) == 0: return 0.0
+
+def _serie_num(df, col, cache):
+    """Converte a coluna para número uma única vez (a versão antiga refazia isso a cada permutação)."""
+    if col not in cache:
+        cache[col] = df[col].apply(limpar_valor_monetario)
+    return cache[col]
+
+
+def _consistencia(df, c_inf, c_pago, c_glosa, cache):
+    if len(df) == 0:
+        return 0.0
+    a = _serie_num(df, c_inf, cache)
+    b = _serie_num(df, c_pago, cache)
+    g = _serie_num(df, c_glosa, cache)
     return float(((a - b - g).abs() < 0.02).mean())
+
 
 def _descobrir_mapeamento(df):
     cols = list(df.columns)
@@ -286,7 +362,8 @@ def _descobrir_mapeamento(df):
             s = _score_campo(campo, hnorm[c], perfis[c])
             if s >= LIMIAR_ATRIBUICAO:
                 outro = max((_score_nome(hnorm[c], o) for o in CAMPOS if o != campo), default=0.0)
-                if outro >= 70 and _score_nome(hnorm[c], campo) < LIMIAR_ATRIBUICAO: continue
+                if outro >= 70 and _score_nome(hnorm[c], campo) < LIMIAR_ATRIBUICAO:
+                    continue
                 candidatos.append((s, campo, c))
     candidatos.sort(key=lambda x: -x[0])
 
@@ -297,18 +374,22 @@ def _descobrir_mapeamento(df):
             usadas.add(c)
 
     faltam = [f for f in CAMPOS_DINHEIRO if f not in mapa]
-    livres = [c for c in cols if c not in usadas and perfis[c]["dinheiro"] >= 0.6]
+    livres = [c for c in cols if c not in usadas and perfis[c]["dinheiro"] >= 0.6][:MAX_COLUNAS_NUMERICAS_LIVRES]
     if faltam and livres:
+        cache = {}
         melhor, melhor_score = None, -1.0
         for perm in itertools.permutations(livres, min(len(faltam), len(livres))):
             tentativa = dict(zip(faltam, perm))
             final = {**mapa, **tentativa}
             score = 0.0
             if all(f in final for f in CAMPOS_DINHEIRO):
-                score += 10 * _consistencia(df, final["Valor informado"], final["Valor pago"], final["Valor da glosa"])
+                score += 10 * _consistencia(
+                    df, final["Valor informado"], final["Valor pago"], final["Valor da glosa"], cache
+                )
             pos = [cols.index(final[f]) for f in CAMPOS_DINHEIRO if f in final]
             score += 0.1 * sum(1 for a, b in zip(pos, pos[1:]) if a < b)
-            if score > melhor_score: melhor, melhor_score = tentativa, score
+            if score > melhor_score:
+                melhor, melhor_score = tentativa, score
         if melhor:
             for f, c in melhor.items():
                 mapa[f] = c
@@ -323,12 +404,14 @@ def _descobrir_mapeamento(df):
 
     return mapa
 
+
 def _montar_saida(df, mapa):
-    def col(campo): return df[mapa[campo]] if campo in mapa else None
+    def col(campo):
+        return df[mapa[campo]] if campo in mapa else None
 
     out = pd.DataFrame(index=df.index)
-    
-    # 1. Extração Bruta
+
+    # 1. Extração bruta
     s = col("Data do evento")
     out["Data do evento"] = s.apply(padronizar_data) if s is not None else pd.NA
     s = col("Protocolo")
@@ -338,7 +421,7 @@ def _montar_saida(df, mapa):
     s = col("Nome do paciente")
     out["Nome do paciente"] = s.apply(_txt) if s is not None else pd.NA
 
-    # 2. Preenchimento para Baixo (Forward Fill para dados hierárquicos)
+    # 2. Preenchimento para baixo (Forward Fill para dados hierárquicos)
     for c in ["Data do evento", "Protocolo", "Doc Original", "Nome do paciente"]:
         out[c] = out[c].replace(["", "-", "Não identificado"], pd.NA)
         out[c] = out[c].ffill()
@@ -362,7 +445,8 @@ def _montar_saida(df, mapa):
     s = col("Valor da glosa")
     if s is not None:
         g = s.apply(limpar_valor_monetario).abs().round(2)
-        if tem_inf_pago and not (g > 0).any(): g = calculada
+        if tem_inf_pago and not (g > 0).any():
+            g = calculada
         out["Valor da glosa"] = g
     elif tem_inf_pago:
         out["Valor da glosa"] = calculada
@@ -371,40 +455,54 @@ def _montar_saida(df, mapa):
 
     s = col("Motivo da glosa")
     out["Motivo da glosa"] = s.apply(_txt) if s is not None else ""
-    
-    # Tratamento para Glosa Silenciosa (Maria Izabel): Glosa > 0 sem justificativa no arquivo
+
+    # Glosa silenciosa: valor cortado sem justificativa no demonstrativo
     out.loc[(out["Motivo da glosa"] == "") & (out["Valor da glosa"] > 0), "Motivo da glosa"] = (
         "Glosa Silenciosa: Valor zerado ou cortado sem justificativa informada no demonstrativo"
     )
-    
+
     return out[COLUNAS_PADRAO_GLOSAS]
 
+
 def _limpar_linhas(out):
-    if out.empty: return out
-    vazio = ((out["Nome do paciente"].isin(["", "Não identificado"])) & (out["Código"].isin(["", "-"])) & 
-             (out["Valor informado"] == 0) & (out["Valor pago"] == 0) & (out["Valor da glosa"] == 0))
+    if out.empty:
+        return out
+    vazio = (
+        (out["Nome do paciente"].isin(["", "Não identificado"])) & (out["Código"].isin(["", "-"]))
+        & (out["Valor informado"] == 0) & (out["Valor pago"] == 0) & (out["Valor da glosa"] == 0)
+    )
     ref = (out["Nome do paciente"] + " " + out["Procedimento"]).map(_norm)
     total = ref.str.match(r"^(SUB ?)?TOTAL\b|^TOTAIS\b")
     return out[~(vazio | total)].reset_index(drop=True)
 
+
 def _processar_bruto(raw):
     tabela = _preparar_tabela(raw)
-    if tabela.empty or tabela.shape[1] < 2: return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), {}
+    if tabela.empty or tabela.shape[1] < 2:
+        return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), {}
     mapa = _descobrir_mapeamento(tabela)
-    if len(mapa) < 2: return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), mapa
+    if len(mapa) < 2:
+        return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), mapa
     return _limpar_linhas(_montar_saida(tabela, mapa)), mapa
 
+
 def _com_cabecalho(df):
-    if isinstance(df.columns, pd.MultiIndex): cab = [" ".join(str(x) for x in t if "Unnamed" not in str(x)) for t in df.columns]
-    else: cab = ["" if str(c).startswith("Unnamed") else str(c) for c in df.columns]
+    if isinstance(df.columns, pd.MultiIndex):
+        cab = [" ".join(str(x) for x in t if "Unnamed" not in str(x)) for t in df.columns]
+    else:
+        cab = ["" if str(c).startswith("Unnamed") else str(c) for c in df.columns]
     return pd.DataFrame([cab] + df.astype(object).values.tolist())
 
+
 def mapear_dataframe_para_glosas(df_bruto, somente_glosas=True):
-    if df_bruto is None or df_bruto.empty: return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS)
+    if df_bruto is None or df_bruto.empty:
+        return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS)
     df, mapa = _processar_bruto(_com_cabecalho(df_bruto))
-    if somente_glosas: df = df[df["Valor da glosa"] > 0.005].reset_index(drop=True)
+    if somente_glosas:
+        df = df[df["Valor da glosa"] > 0.005].reset_index(drop=True)
     df.attrs["mapeamento"] = mapa
     return df
+
 
 # --------------------------------------------------------------------------
 # Leitura de texto corrido (PDF sem tabelas) COM MEMÓRIA DE ESTADO
@@ -414,14 +512,17 @@ def _linhas_texto_para_df(linhas):
     contexto = {"data": "-", "nome": "", "protocolo": "-", "guia": "-"}
 
     for ln in linhas:
-        m_prot = re.search(r"(?:protocolo|prot\.)[\s:]*([A-Z0-9.-]{5,20})", ln, re.I)
-        if m_prot: contexto["protocolo"] = m_prot.group(1)
+        m_prot = _RE_PROTOCOLO.search(ln)
+        if m_prot:
+            contexto["protocolo"] = m_prot.group(1)
 
-        m_guia = re.search(r"(?:guia|senha|doc\.)[\s:]*([A-Z0-9.-]{5,20})", ln, re.I)
-        if m_guia: contexto["guia"] = m_guia.group(1)
+        m_guia = _RE_GUIA.search(ln)
+        if m_guia:
+            contexto["guia"] = m_guia.group(1)
 
         m_data = _RE_DATA.search(ln)
-        if m_data: contexto["data"] = m_data.group(1)
+        if m_data:
+            contexto["data"] = m_data.group(1)
 
         valores = _RE_DIN_TEXTO.findall(ln)
         cod = re.search(r"\b(\d{8}|\d{1,2}\.\d{2}\.\d{2}\.\d{2}-?\d?)\b", ln)
@@ -436,7 +537,8 @@ def _linhas_texto_para_df(linhas):
 
         resto = _RE_DATA.sub(" ", ln)
         resto = _RE_DIN_TEXTO.sub(" ", resto)
-        if cod: resto = resto.replace(cod.group(1), " ")
+        if cod:
+            resto = resto.replace(cod.group(1), " ")
         resto = re.sub(r"\s+", " ", resto).strip(" -|;")
 
         v = [limpar_valor_monetario(x) for x in valores]
@@ -444,7 +546,7 @@ def _linhas_texto_para_df(linhas):
         glosa = v[2] if len(v) >= 3 else max(inf - pago, 0.0)
 
         regs.append({
-            "Data do evento": contexto["data"] or "-",
+            "Data do evento": padronizar_data(contexto["data"]),
             "Protocolo": contexto["protocolo"] or "-",
             "Doc Original": contexto["guia"] or "-",
             "Nome do paciente": contexto["nome"] or "Não identificado",
@@ -454,6 +556,7 @@ def _linhas_texto_para_df(linhas):
             "Motivo da glosa": "",
         })
     return pd.DataFrame(regs, columns=COLUNAS_PADRAO_GLOSAS)
+
 
 def _linhas_pdf(doc):
     linhas = []
@@ -466,57 +569,87 @@ def _linhas_pdf(doc):
             linhas.append(" ".join(w for _, w in sorted(grupos[y])))
     return linhas
 
+
 # --------------------------------------------------------------------------
 # XML TISS (e XMLs parecidos)
 # --------------------------------------------------------------------------
-def _tag(t): return t.split("}")[-1]
+def _tag(t):
+    return t.split("}")[-1]
+
 
 def extrair_glosas_xml(arquivo_xml):
     arquivo_xml.seek(0)
     root = ET.parse(arquivo_xml).getroot()
     registros = []
 
-    def folhas(el): return {_tag(c.tag): (c.text or "").strip() for c in el if len(c) == 0 and (c.text or "").strip()}
+    def folhas(el):
+        return {_tag(c.tag): (c.text or "").strip() for c in el if len(c) == 0 and (c.text or "").strip()}
 
     def percorrer(el, contexto):
         proprias = folhas(el)
         ctx = {**contexto, **proprias}
         emitiu = False
         for filho in el:
-            if len(filho) > 0: emitiu = percorrer(filho, ctx) or emitiu
+            if len(filho) > 0:
+                emitiu = percorrer(filho, ctx) or emitiu
         if not emitiu and len(proprias) >= 2:
             registros.append(ctx)
             return True
         return emitiu
 
     percorrer(root, {})
-    if not registros: return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), {}
+    if not registros:
+        return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), {}
     df = pd.DataFrame(registros)
     return _processar_bruto(_com_cabecalho(df))
+
 
 def _detectar_separador(texto):
     linhas = [l for l in texto.splitlines() if l.strip()][:40]
     melhor, melhor_score = ";", -1.0
     for sep in (";", "\t", "|", ","):
         contagens = [len(l) for l in csv.reader(linhas, delimiter=sep)]
-        if not contagens: continue
+        if not contagens:
+            continue
         moda = max(set(contagens), key=contagens.count)
-        if moda < 2: continue
+        if moda < 2:
+            continue
         score = (contagens.count(moda) / len(contagens)) * min(moda, 10)
-        if score > melhor_score + 1e-9: melhor, melhor_score = sep, score
+        if score > melhor_score + 1e-9:
+            melhor, melhor_score = sep, score
     return melhor
 
-def extrair_glosas_de_arquivo(arquivo_upload, plano="Identificar pelo arquivo", somente_glosas=True):
+
+def _detectar_operadora(plano, nome_arquivo):
+    if plano and plano != PLANO_AUTOMATICO:
+        return plano
+    if extrair_nome_operadora is not None:
+        return extrair_nome_operadora(nome_arquivo)
+    return "INDEFINIDO"
+
+
+# --------------------------------------------------------------------------
+# Função principal chamada pelo app
+# --------------------------------------------------------------------------
+def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_glosas=True):
+    """Retorna (DataFrame, mensagem_de_erro_ou_None)."""
     vazio = pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS)
     try:
-        nome = arquivo_upload.name.lower()
+        nome_original = getattr(arquivo_upload, "name", "") or ""
+        nome = nome_original.lower()
         arquivo_upload.seek(0)
         dados = arquivo_upload.read()
+        if not dados:
+            return vazio, "O arquivo está vazio."
         resultados = []
 
         if nome.endswith((".xlsx", ".xlsm", ".xls")):
-            abas = pd.read_excel(io.BytesIO(dados), sheet_name=None, header=None, dtype=object)
-            for aba in abas.values(): resultados.append(_processar_bruto(aba))
+            try:
+                abas = pd.read_excel(io.BytesIO(dados), sheet_name=None, header=None, dtype=object)
+            except ImportError as e:
+                return vazio, f"Biblioteca ausente para ler Excel ('openpyxl' para .xlsx, 'xlrd' para .xls): {e}"
+            for aba in abas.values():
+                resultados.append(_processar_bruto(aba))
 
         elif nome.endswith((".csv", ".txt", ".tsv")):
             texto = None
@@ -524,31 +657,44 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano="Identificar pelo arquivo", 
                 try:
                     texto = dados.decode(enc)
                     break
-                except UnicodeDecodeError: continue
-            if texto is None: return vazio, "Erro de encoding no CSV."
+                except UnicodeDecodeError:
+                    continue
+            if texto is None:
+                return vazio, "Erro de encoding no CSV."
             sep = _detectar_separador(texto)
             linhas = [l for l in csv.reader(io.StringIO(texto), delimiter=sep) if any(c.strip() for c in l)]
+            if not linhas:
+                return vazio, "O arquivo não tem linhas com conteúdo."
             largura = max(len(l) for l in linhas)
             bruto = pd.DataFrame([l + [None] * (largura - len(l)) for l in linhas], dtype=object)
             resultados.append(_processar_bruto(bruto))
 
         elif nome.endswith((".html", ".htm")):
-            for t in pd.read_html(io.BytesIO(dados)): resultados.append(_processar_bruto(_com_cabecalho(t)))
+            for t in pd.read_html(io.BytesIO(dados)):
+                resultados.append(_processar_bruto(_com_cabecalho(t)))
 
         elif nome.endswith(".xml"):
             resultados.append(extrair_glosas_xml(io.BytesIO(dados)))
 
         elif nome.endswith(".pdf"):
-            if fitz is None: return vazio, "PyMuPDF não instalado."
+            if fitz is None:
+                return vazio, "PyMuPDF não instalado. Rode: pip install pymupdf"
             doc = fitz.open(stream=dados, filetype="pdf")
-            for pagina in doc:
-                if hasattr(pagina, "find_tables"):
-                    for t in pagina.find_tables().tables: resultados.append(_processar_bruto(pd.DataFrame(t.extract())))
-            if not any(not d.empty for d, _ in resultados):
-                resultados.append((_limpar_linhas(_linhas_texto_para_df(_linhas_pdf(doc))), {"origem": "texto corrido"}))
+            try:
+                for pagina in doc:
+                    if hasattr(pagina, "find_tables"):
+                        for t in pagina.find_tables().tables:
+                            resultados.append(_processar_bruto(pd.DataFrame(t.extract())))
+                if not any(not d.empty for d, _ in resultados):
+                    resultados.append(
+                        (_limpar_linhas(_linhas_texto_para_df(_linhas_pdf(doc))), {"origem": "texto corrido"})
+                    )
+            finally:
+                doc.close()
 
         elif nome.endswith(".docx"):
-            if docx is None: return vazio, "python-docx não instalado."
+            if docx is None:
+                return vazio, "python-docx não instalado. Rode: pip install python-docx"
             d = docx.Document(io.BytesIO(dados))
             for tab in d.tables:
                 linhas = [[c.text.strip() for c in lin.cells] for lin in tab.rows]
@@ -557,17 +703,24 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano="Identificar pelo arquivo", 
                 linhas = [p.text for p in d.paragraphs if p.text.strip()]
                 resultados.append((_limpar_linhas(_linhas_texto_para_df(linhas)), {"origem": "texto corrido"}))
         else:
-            return vazio, f"Formato não suportado: {nome}"
+            return vazio, f"Formato não suportado: {nome_original}"
 
         dfs = [d for d, _ in resultados if not d.empty]
         mapa = next((m for d, m in resultados if not d.empty), {})
-        if not dfs: return vazio, "Nenhuma glosa ou estrutura de valores encontrada."
+        if not dfs:
+            return vazio, "Nenhuma glosa ou estrutura de valores encontrada."
 
         df = pd.concat(dfs, ignore_index=True)
-        if somente_glosas: df = df[df["Valor da glosa"] > 0.005].reset_index(drop=True)
+        total_lidos = len(df)
+        if somente_glosas:
+            df = df[df["Valor da glosa"] > 0.005].reset_index(drop=True)
         df.attrs["mapeamento"] = mapa
+        df.attrs["operadora"] = _detectar_operadora(plano, nome_original)
 
-        if df.empty: return df, f"Tabela lida, mas nenhuma glosa maior que zero encontrada. Colunas: {mapa}"
+        if df.empty:
+            return df, (f"Tabela lida ({total_lidos} linhas), mas nenhuma glosa maior que zero foi encontrada. "
+                        f"Colunas reconhecidas: {mapa}")
         return df, None
 
-    except Exception as e: return vazio, f"Erro ao processar o arquivo: {e}"
+    except Exception as e:
+        return vazio, f"Erro ao processar o arquivo: {type(e).__name__}: {e}"
