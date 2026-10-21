@@ -38,13 +38,27 @@ def init_db_valores():
     conn.close()
 
 def buscar_tabela_plano():
+    """Busca a tabela de recebimentos do plano salva no banco de dados."""
     conn = sqlite3.connect(DB_VALORES)
     df = pd.read_sql_query("SELECT * FROM tabela_valores_plano", conn)
     conn.close()
     return df
 
 def buscar_tabela_repasse():
+    """Busca a tabela de repasses da equipe salva no banco de dados."""
     conn = sqlite3.connect(DB_VALORES)
     df = pd.read_sql_query("SELECT * FROM tabela_repasse_profissional", conn)
     conn.close()
     return df
+
+def salvar_tabela_plano(df):
+    """Grava os dados da planilha do plano permanentemente no banco de dados."""
+    conn = sqlite3.connect(DB_VALORES)
+    df.to_sql("tabela_valores_plano", conn, if_exists="replace", index=False)
+    conn.close()
+
+def salvar_tabela_repasse(df):
+    """Grava os dados da planilha de repasse permanentemente no banco de dados."""
+    conn = sqlite3.connect(DB_VALORES)
+    df.to_sql("tabela_repasse_profissional", conn, if_exists="replace", index=False)
+    conn.close()
