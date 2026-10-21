@@ -4,14 +4,13 @@ Gera relatórios consolidados em Excel (XlsxWriter) e PDF (ReportLab) baseados n
 """
 import io
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
-# Para gerar o PDF com o design igual ao da imagem
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
 
 def brl(valor):
     """Formata valor para Moeda Real Brasileiro."""
@@ -21,12 +20,27 @@ def brl(valor):
         return "R$ 0,00"
 
 def spec_producao(nome, registro, especialidade, competencia, espelho, resumo, por_plano, so_demo, descontou_glosa):
-    return {"tipo": "producao", "resumo": resumo}
+    return {
+        "tipo": "producao",
+        "resumo": resumo,
+        "titulo": f"Produção - {nome}",
+        "subtitulo": f"Especialidade: {especialidade} | Competência: {competencia}",
+        "detalhes": [
+            {"titulo": "Espelho da Produção", "df": espelho}
+        ]
+    }
 
 def spec_glosas(glosas, demo, nomes):
+    # Renomear para linguagem da clínica: Valor Informado -> Valor Unitário
+    df_glosas = glosas.copy()
+    if "Valor informado" in df_glosas.columns:
+        df_glosas.rename(columns={"Valor informado": "Valor unitário"}, inplace=True)
+        
     return {
         "tipo": "glosas",
-        "detalhes": [{"df": glosas, "moeda": ["Valor da glosa"]}],
+        "titulo": "Relatório de Glosas",
+        "subtitulo": f"Gerado a partir de {len(nomes)} demonstrativo(s)",
+        "detalhes": [{"titulo": "Relação de Glosas", "df": df_glosas, "moeda": ["Valor unitário", "Valor pago", "Valor da glosa"]}],
         "resumos": [
             {"df": pd.DataFrame(), "titulo": "Por motivo"},
             {"df": pd.DataFrame(), "titulo": "Por operadora"},
@@ -35,10 +49,6 @@ def spec_glosas(glosas, demo, nomes):
     }
 
 def spec_faturamento(res, arqs_fat, arqs_demo):
-    """
-    Monta a especificação completa para gerar o 'Relatório de Faturamento x Recebimento'
-    exatamente como na imagem.
-    """
     kpis = [
         ("Guias faturadas", len(res), "int"),
         ("Valor faturado", float(res["Valor faturado"].sum()), "moeda"),
@@ -50,9 +60,7 @@ def spec_faturamento(res, arqs_fat, arqs_demo):
         ("Guias sem retorno no demonstrativo", int((res["Situação"] == "Não pago (sem retorno no demonstrativo)").sum()), "int"),
     ]
     
-    # Resumos Agregados (Como na imagem)
     cols_calc = ["Valor faturado", "Valor pago", "Valor da glosa", "Valor em aberto"]
-    
     def agrupar(col_grupo):
         if col_grupo not in res.columns: return pd.DataFrame()
         ag = res.groupby(col_grupo).agg({
@@ -61,7 +69,6 @@ def spec_faturamento(res, arqs_fat, arqs_demo):
         ag["% pago"] = np.where(ag["Valor faturado"] > 0, ag["Valor pago"] / ag["Valor faturado"], 0.0)
         return ag
 
-    # Mês de pagamento (extrair da data de pagamento)
     res_copy = res.copy()
     res_copy["Mês de pagamento"] = pd.to_datetime(res_copy["Data pagamento"]).dt.strftime('%m/%Y').fillna("-")
 
@@ -103,21 +110,15 @@ def gerar_excel(spec):
     return output.getvalue()
 
 def gerar_pdf(spec):
-    """
-    Gera um PDF profissional usando ReportLab, replicando as cores 
-    e a disposição tabular solicitada na imagem.
-    """
     output = io.BytesIO()
     doc = SimpleDocTemplate(output, pagesize=landscape(A4), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     elementos = []
     
     styles = getSampleStyleSheet()
-    # Estilos customizados
     title_style = ParagraphStyle('TitleStyle', parent=styles['Normal'], fontSize=18, textColor=colors.HexColor("#FFFFFF"), fontName="Helvetica-Bold", spaceAfter=4)
     subtitle_style = ParagraphStyle('SubTitle', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor("#DCE6F0"), fontName="Helvetica", spaceAfter=10)
     h2_style = ParagraphStyle('Heading2', parent=styles['Heading2'], fontSize=12, textColor=colors.HexColor("#0E7C86"), fontName="Helvetica-Bold", spaceBefore=15, spaceAfter=8)
     
-    # 1. Cabeçalho Azul Escuro
     header_data = [[Paragraph(spec.get("titulo", "Relatório"), title_style)], [Paragraph(spec.get("subtitulo", ""), subtitle_style)]]
     t_header = Table(header_data, colWidths=[780])
     t_header.setStyle(TableStyle([
@@ -129,7 +130,6 @@ def gerar_pdf(spec):
     elementos.append(t_header)
     elementos.append(Spacer(1, 10))
     
-    # 2. Metadados
     if "metadados" in spec:
         meta_data = []
         keys = list(spec["metadados"].keys())
@@ -150,7 +150,6 @@ def gerar_pdf(spec):
         elementos.append(t_meta)
         elementos.append(Spacer(1, 15))
         
-    # 3. KPIs em Grid (4 colunas x 2 linhas)
     if "kpis" in spec and spec["kpis"]:
         kpi_data = []
         linha_rotulos, linha_valores = [], []
@@ -175,17 +174,15 @@ def gerar_pdf(spec):
         elementos.append(t_kpi)
         elementos.append(Spacer(1, 15))
 
-    # 4. Tabelas de Resumo
     for res in spec.get("resumos", []):
         df = res["df"]
         if df.empty: continue
         
         elementos.append(Paragraph(res.get("titulo", ""), h2_style))
         
-        # Formatar colunas financeiras e percentuais
         df_print = df.copy()
         for col in df_print.columns:
-            if "Valor" in col:
+            if "Valor" in col or "unitário" in col.lower():
                 df_print[col] = df_print[col].apply(brl)
             elif "%" in col:
                 df_print[col] = df_print[col].apply(lambda x: f"{x*100:.1f}%".replace(".",","))
@@ -193,10 +190,8 @@ def gerar_pdf(spec):
                 df_print[col] = df_print[col].apply(lambda x: str(int(x)) if pd.notnull(x) else "-")
                 
         table_data = [df_print.columns.tolist()] + df_print.values.tolist()
-        
-        # Ajuste dinâmico de colunas
         num_cols = len(df_print.columns)
-        col_w = 780 / num_cols
+        col_w = 780 / num_cols if num_cols > 0 else 780
         
         t_resumo = Table(table_data, colWidths=[col_w]*num_cols)
         t_resumo.setStyle(TableStyle([
