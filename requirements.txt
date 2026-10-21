@@ -1,6 +1,8 @@
 streamlit
 pandas
+numpy
 openpyxl
+XlsxWriter
 PyMuPDF
-fpdf
-pip install pandas numpy reportlab XlsxWriter
+reportlab
+python-docx
