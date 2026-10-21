@@ -1,4 +1,4 @@
-""""""
+"""
 Motor de Valores e Tabelas de Preços.
 Gerencia a leitura multi-abas de especialidades, valores do plano e repasses da equipe.
 """
@@ -13,7 +13,6 @@ def init_db_valores():
     conn = sqlite3.connect(DB_VALORES)
     cursor = conn.cursor()
     
-    # 1. Tabela de Especialidades
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tabela_especialidades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +20,6 @@ def init_db_valores():
         )
     ''')
     
-    # 2. Tabela do Plano de Saúde (O que o convênio paga)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tabela_valores_plano (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +30,6 @@ def init_db_valores():
         )
     ''')
     
-    # 3. Tabela de Repasse (O que a clínica repassa ao profissional)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tabela_repasse_profissional (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +40,6 @@ def init_db_valores():
         )
     ''')
 
-    # 4. Tabela Master Completa para Multi-abas
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tabela_valores_completa (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +55,6 @@ def init_db_valores():
     conn.close()
 
 def buscar_especialidades():
-    """Retorna a lista de especialidades cadastradas no banco."""
     conn = sqlite3.connect(DB_VALORES)
     cursor = conn.cursor()
     cursor.execute("SELECT nome FROM tabela_especialidades ORDER BY nome")
@@ -70,7 +65,6 @@ def buscar_especialidades():
     return lista
 
 def adicionar_especialidade(nome):
-    """Cadastra uma nova especialidade."""
     conn = sqlite3.connect(DB_VALORES)
     cursor = conn.cursor()
     try:
@@ -81,14 +75,12 @@ def adicionar_especialidade(nome):
     conn.close()
 
 def buscar_tabela_plano():
-    """Busca a tabela de recebimentos do plano salva no banco de dados."""
     conn = sqlite3.connect(DB_VALORES)
     df = pd.read_sql_query("SELECT * FROM tabela_valores_plano", conn)
     conn.close()
     return df
 
 def buscar_tabela_repasse():
-    """Busca a tabela de repasses da equipe salva no banco de dados."""
     conn = sqlite3.connect(DB_VALORES)
     try:
         df = pd.read_sql_query("SELECT * FROM tabela_valores_completa", conn)
@@ -100,23 +92,17 @@ def buscar_tabela_repasse():
     return df
 
 def salvar_tabela_plano(df):
-    """Grava os dados da planilha do plano permanentemente no banco de dados."""
     conn = sqlite3.connect(DB_VALORES)
     df.to_sql("tabela_valores_plano", conn, if_exists="replace", index=False)
     conn.close()
 
 def salvar_tabela_repasse(df):
-    """Grava os dados da planilha de repasse permanentemente no banco de dados."""
     conn = sqlite3.connect(DB_VALORES)
     df.to_sql("tabela_valores_completa", conn, if_exists="replace", index=False)
     df.to_sql("tabela_repasse_profissional", conn, if_exists="replace", index=False)
     conn.close()
 
 def processar_e_salvar_excel_multi_abas(arquivo_upload):
-    """
-    Lê o Excel multi-abas enviado, trata o layout específico das tabelas da clínica,
-    preenche células mescladas (Forward Fill) e salva no banco de dados com validação rigorosa de erros.
-    """
     try:
         arquivo_upload.seek(0)
         dados = arquivo_upload.read()
@@ -135,7 +121,6 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
                 if df_raw.empty:
                     continue
 
-                # Localiza a linha do cabeçalho real na aba
                 cab_idx = None
                 for idx, row in df_raw.iterrows():
                     linha_str = " ".join([str(val).upper() for val in row.values if pd.notnull(val)])
@@ -148,7 +133,6 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
                     df_aba = df_aba.iloc[:, :4]
                     df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
                 else:
-                    # Se não achar o cabeçalho exato, tenta assumir as 4 primeiras colunas
                     df_aba = df_raw.iloc[:, :4].copy()
                     if df_aba.shape[1] >= 4:
                         df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
@@ -156,17 +140,14 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
                         abas_com_erro.append(sheet_name)
                         continue
 
-                # Atribui o nome da aba como a especialidade exata
                 esp_nome = sheet_name.strip().upper()
                 df_aba["especialidade"] = esp_nome
                 conexoes_especialidades.add(esp_nome)
 
-                # Preenchimento inteligente para células mescladas (Forward Fill no Plano)
                 df_aba["plano"] = df_aba["plano"].replace(["", "nan", "None"], pd.NA).ffill()
                 df_aba = df_aba.dropna(subset=["valor_plano"])
                 df_aba = df_aba[~df_aba["plano"].astype(str).str.contains("PLANO DE SAÚDE", na=False, case=False)]
 
-                # Conversão numérica segura
                 df_aba["valor_plano"] = pd.to_numeric(df_aba["valor_plano"], errors="coerce").fillna(0.0)
                 df_aba["valor_profissional"] = pd.to_numeric(df_aba["valor_profissional"], errors="coerce").fillna(0.0)
                 df_aba["tempo_atendimento"] = df_aba["tempo_atendimento"].astype(str).str.strip()
@@ -176,11 +157,10 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
                 abas_com_erro.append(f"{sheet_name} ({str(ex)})")
 
         if not dfs_consolidados:
-            return False, f"⚠️ Nenhuma regra de valor foi extraída. Verifique se o formato das colunas está correto. Abas com falha: {abas_com_erro}"
+            return False, f"⚠️ Nenhuma regra de valor foi extraída. Abas com falha: {abas_com_erro}"
 
         df_final = pd.concat(dfs_consolidados, ignore_index=True)
 
-        # Gravação no Banco de Dados
         conn = sqlite3.connect(DB_VALORES)
         cursor = conn.cursor()
         for esp in conexoes_especialidades:
@@ -190,12 +170,11 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
 
         salvar_tabela_repasse(df_final)
 
-        msg_retorno = f"✅ Importação Master Concluída! {len(df_final)} registros processados de {len(conexoes_especialidades)} abas ({', '.join(conexoes_especialidades)})."
+        msg_retorno = f"✅ Importação Master Concluída! {len(df_final)} registos processados de {len(conexoes_especialidades)} abas ({', '.join(conexoes_especialidades)})."
         if abas_com_erro:
-            msg_retorno += f" ⚠️ Aviso: As seguintes abas apresentaram divergência de estrutura e foram ignoradas: {abas_com_erro}."
+            msg_retorno += f" ⚠️ Aviso: Abas com divergência: {abas_com_erro}."
 
         return True, msg_retorno
 
     except Exception as e:
-        return False, f"❌ Erro crítico ao processar a planilha multi-abas: {str(e)}. Onde buscar a solução: Certifique-se de que o ficheiro Excel contém as abas nomeadas com as especialidades e colunas de valores válidas."
-2. Atualizar o app.py
+        return False, f"❌ Erro crítico ao processar a planilha multi-abas: {str(e)}"
