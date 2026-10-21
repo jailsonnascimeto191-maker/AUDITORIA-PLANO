@@ -199,7 +199,6 @@ else:
                     if not df_res.empty:
                         st.success(f"✅ Processamento concluído! {len(df_res)} registros validados com sucesso.")
                         
-                        # Exibição do auto-mapeamento de colunas identificado pelo motor
                         mapeamento = df_res.attrs.get("mapeamento", {})
                         if mapeamento:
                             with st.expander("🔍 Mapeamento Automático de Colunas Identificado pelo Motor"):
@@ -209,7 +208,6 @@ else:
                         st.dataframe(df_res, use_container_width=True)
                         st.session_state["ultimo_processamento"] = df_res
                         
-                        # Processamento opcional do relatório de profissionais
                         if arquivo_prof is not None:
                             try:
                                 df_p = pd.read_excel(arquivo_prof) if arquivo_prof.name.endswith(('.xlsx', '.xls')) else pd.read_csv(arquivo_prof)
@@ -275,11 +273,11 @@ else:
             st.info("Nenhum arquivo auditado no momento. Dirija-se à **Casa das Máquinas** e suba o demonstrativo do plano.")
 
     # ----------------------------------------------------------------------
-    # MENU 4: VALORES E REPASSES (INTERATIVOS + ARQUIVO)
+    # MENU 4: VALORES E REPASSES (SEPARADOS POR ESPECIALIDADE)
     # ----------------------------------------------------------------------
     elif menu == "💰 Valores":
         st.title("💰 Gestão de Tabelas de Preços e Repasses")
-        st.info("💡 **Edição Direta:** Pode clicar e alterar os valores diretamente nas células das tabelas abaixo ou importar novas planilhas.")
+        st.info("💡 **Atenção:** As tabelas de repasse agora são geridas de forma individualizada por especialidade.")
         
         tab1, tab2 = st.tabs(["🏥 Tabela de Valores do Plano (Recebimentos)", "👥 Tabela de Repasse dos Profissionais (Custos/Lucro)"])
         
@@ -289,7 +287,6 @@ else:
             if df_p_salva.empty:
                 df_p_salva = pd.DataFrame(columns=["plano", "codigo_tuss", "procedimento", "valor_plano"])
             
-            # Editor Interativo para Edição/Inclusão Manual
             df_editado_p = st.data_editor(df_p_salva, num_rows="dynamic", use_container_width=True, key="editor_plano")
             if st.button("💾 Salvar Alterações Manuais (Tabela do Plano)", type="primary"):
                 motor_valores.salvar_tabela_plano(df_editado_p)
@@ -297,41 +294,81 @@ else:
                 st.rerun()
 
             st.markdown("---")
-            st.markdown("#### Importar Novo Preçário por Arquivo")
-            file_plano = st.file_uploader("Subir Tabela do Plano (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_plano_file")
-            if file_plano:
-                df_up_p = pd.read_excel(file_plano) if file_plano.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_plano)
-                st.subheader("Pré-visualização do Ficheiro")
-                st.dataframe(df_up_p, use_container_width=True)
-                if st.button("Substituir Tabela do Plano pelo Arquivo Carregado", type="primary"):
-                    motor_valores.salvar_tabela_plano(df_up_p)
-                    st.success("✅ Tabela do Plano atualizada via arquivo!")
-                    st.rerun()
+            with st.expander("Importar Novo Preçário Oficial por Arquivo em Massa"):
+                file_plano = st.file_uploader("Subir Tabela do Plano (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_plano_file")
+                if file_plano:
+                    df_up_p = pd.read_excel(file_plano) if file_plano.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_plano)
+                    st.dataframe(df_up_p, use_container_width=True)
+                    if st.button("Substituir Tabela do Plano pelo Arquivo Carregado", type="primary"):
+                        motor_valores.salvar_tabela_plano(df_up_p)
+                        st.success("✅ Tabela do Plano atualizada via arquivo!")
+                        st.rerun()
 
         with tab2:
-            st.subheader("2. Tabela de Repasses da Equipe (Salva no Banco)")
+            st.subheader("2. Tabela de Repasses por Especialidade")
+            
+            # Buscar a lista dinâmica de especialidades do banco
+            especialidades_db = motor_valores.buscar_especialidades() if hasattr(motor_valores, 'buscar_especialidades') else ["Geral"]
+            
+            col_esp1, col_esp2 = st.columns([3, 1])
+            with col_esp1:
+                esp_selecionada = st.selectbox("Selecione a Especialidade para configurar os repasses:", especialidades_db)
+            with col_esp2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                with st.popover("➕ Nova Especialidade"):
+                    st.markdown("Cadastrar no Banco")
+                    nova_esp = st.text_input("Nome da Especialidade")
+                    if st.button("Gravar", type="primary"):
+                        if nova_esp.strip():
+                            motor_valores.adicionar_especialidade(nova_esp)
+                            st.rerun()
+            
+            # Buscar a tabela principal de repasses
             df_r_salva = motor_valores.buscar_tabela_repasse() if hasattr(motor_valores, 'buscar_tabela_repasse') else pd.DataFrame()
             if df_r_salva.empty:
                 df_r_salva = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
             
-            # Editor Interativo para Edição/Inclusão Manual
-            df_editado_r = st.data_editor(df_r_salva, num_rows="dynamic", use_container_width=True, key="editor_repasse")
-            if st.button("💾 Salvar Alterações Manuais (Tabela de Repasse)", type="primary"):
-                motor_valores.salvar_tabela_repasse(df_editado_r)
-                st.success("✅ Tabela de Repasse salva no banco de dados com sucesso!")
+            # Filtrar a tabela apenas para a especialidade selecionada
+            df_esp_atual = df_r_salva[df_r_salva['especialidade'] == esp_selecionada].copy()
+            if df_esp_atual.empty:
+                df_esp_atual = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
+            
+            # Travar a coluna "especialidade" para evitar erros de digitação do usuário
+            df_esp_atual['especialidade'] = esp_selecionada
+
+            st.markdown(f"**Valores de Repasse: {esp_selecionada}**")
+            df_editado_r = st.data_editor(
+                df_esp_atual, 
+                num_rows="dynamic", 
+                use_container_width=True, 
+                key=f"editor_repasse_{esp_selecionada}",
+                column_config={
+                    "especialidade": st.column_config.TextColumn("Especialidade", disabled=True, default=esp_selecionada)
+                }
+            )
+            
+            if st.button(f"💾 Salvar Tabela Exclusiva de {esp_selecionada}", type="primary"):
+                # Garante que a especialidade nas linhas novas não ficou em branco
+                df_editado_r['especialidade'] = esp_selecionada
+                # Remove as linhas antigas dessa especialidade do banco principal
+                df_resto = df_r_salva[df_r_salva['especialidade'] != esp_selecionada]
+                # Une o resto do banco com a edição atual
+                df_final = pd.concat([df_resto, df_editado_r], ignore_index=True)
+                
+                motor_valores.salvar_tabela_repasse(df_final)
+                st.success(f"✅ Tabela de repasse de {esp_selecionada} salva no banco de dados!")
                 st.rerun()
 
             st.markdown("---")
-            st.markdown("#### Importar Nova Tabela de Repasses por Arquivo")
-            file_repasse = st.file_uploader("Subir Tabela de Repasse dos Profissionais (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_repasse_file")
-            if file_repasse:
-                df_up_r = pd.read_excel(file_repasse) if file_repasse.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_repasse)
-                st.subheader("Pré-visualização do Ficheiro")
-                st.dataframe(df_up_r, use_container_width=True)
-                if st.button("Substituir Tabela de Repasses pelo Arquivo Carregado", key="btn_rep_arq", type="primary"):
-                    motor_valores.salvar_tabela_repasse(df_up_r)
-                    st.success("✅ Tabela de Repasse atualizada via arquivo!")
-                    st.rerun()
+            with st.expander("Importar Tabela Geral de Repasses por Arquivo (Substitui todas as especialidades)"):
+                file_repasse = st.file_uploader("Subir Master Tabela (Excel/CSV)", type=["xlsx", "xls", "csv"], key="t_repasse_file")
+                if file_repasse:
+                    df_up_r = pd.read_excel(file_repasse) if file_repasse.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file_repasse)
+                    st.dataframe(df_up_r, use_container_width=True)
+                    if st.button("Substituir o Banco de Repasses pelo Arquivo", key="btn_rep_arq", type="primary"):
+                        motor_valores.salvar_tabela_repasse(df_up_r)
+                        st.success("✅ Banco de Repasses Master atualizado!")
+                        st.rerun()
 
     # ----------------------------------------------------------------------
     # MENU 5: CADASTROS (PROFISSIONAIS, USUÁRIOS E RECEPÇÃO)
@@ -341,13 +378,16 @@ else:
         
         tab_cad1, tab_cad2 = st.tabs(["Corpo Clínico & Profissionais", "🔐 Gestão de Usuários do Sistema"])
         
+        # Puxa a mesma lista do banco gerada na aba Valores
+        especialidades_db = motor_valores.buscar_especialidades() if hasattr(motor_valores, 'buscar_especialidades') else ["Geral"]
+
         with tab_cad1:
             st.subheader("Cadastrar Novo Profissional")
             with st.form("form_cad_prof"):
                 c_n1, c_n2 = st.columns(2)
                 nome_prof = c_n1.text_input("Nome Completo do Profissional")
-                # Texto Livre para digitação de qualquer especialidade
-                especialidade = c_n2.text_input("Especialidade (Ex: Psicologia, Fisioterapia, Neurologia, etc.)")
+                # Dropdown dinâmico alimentado pelo banco de especialidades
+                especialidade_prof = c_n2.selectbox("Especialidade do Profissional", especialidades_db)
                 
                 c_n3, c_n4 = st.columns(2)
                 registro_conselho = c_n3.text_input("Número de Registro (CRP, CREFITO, etc.)")
@@ -355,10 +395,10 @@ else:
                 
                 btn_cad_p = st.form_submit_button("Salvar Profissional")
                 if btn_cad_p:
-                    if nome_prof.strip() and especialidade.strip():
-                        st.success(f"✅ Profissional **{nome_prof}** ({especialidade}) registrado com sucesso no corpo clínico!")
+                    if nome_prof.strip():
+                        st.success(f"✅ Profissional **{nome_prof}** ({especialidade_prof}) registrado com sucesso no corpo clínico!")
                     else:
-                        st.error("Por favor, preencha ao menos o Nome e a Especialidade.")
+                        st.error("Por favor, preencha ao menos o Nome.")
 
         with tab_cad2:
             st.subheader("Criar Acesso para Funcionário/Recepção")
