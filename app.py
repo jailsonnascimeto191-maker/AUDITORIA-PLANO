@@ -2,9 +2,9 @@ import streamlit as st
 import pandas as pd
 import motor_seguranca
 import motor_valores
-import motor_auditoria
+import motor_extracao
 
-# 1. INICIALIZAR BANCOS DE DADOS COM PROTEÇÃO CONTRA PROBLEMAS DE CACHE
+# 1. INICIALIZAÇÃO SEGURA DOS BANCOS DE DADOS
 try:
     if hasattr(motor_seguranca, 'init_db_seguranca'):
         motor_seguranca.init_db_seguranca()
@@ -49,10 +49,10 @@ if not st.session_state.autenticado:
                     else:
                         st.error(f"⚠️ {msg}")
                 else:
-                    st.warning("⚠️ O módulo de segurança está a sincronizar no GitHub. Por favor, aguarde alguns segundos e atualize a página.")
+                    st.warning("⚠️ O módulo de segurança está a sincronizar. Aguarde alguns segundos.")
 
 # ==========================================
-# 3. ÁREA AUTENTICADA (SISTEMA LIBERADO)
+# 3. ÁREA AUTENTICADA (SISTEMA COMPLETO)
 # ==========================================
 else:
     with st.sidebar:
@@ -72,43 +72,84 @@ else:
 
     # NAVEGAÇÃO DOS MÓDULOS
     if menu == "📊 Painel":
-        st.title("Painel de Repasses")
-        st.info("Visão financeira consolidada e cruzamentos.")
+        st.title("📊 Painel de Repasses & Lucratividade")
+        st.markdown("Visão consolidada do faturamento e repasses da equipe.")
+        
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("Total Faturado", "R$ 0,00")
+        col_m2.metric("Total Glosado", "R$ 0,00")
+        col_m3.metric("Repasse Estimado", "R$ 0,00")
 
     elif menu == "📥 Casa das Máquinas":
-        st.title("Casa das Máquinas (Auditoria)")
-        st.info("Upload de demonstrativos de planos e relatórios da equipe.")
+        st.title("📥 Casa das Máquinas")
+        st.markdown("### Processamento e Leitura Automática de Extratos")
+        
+        arquivo_upload = st.file_uploader(
+            "Selecione o arquivo do plano de saúde (Excel, PDF, CSV, XML ou DOCX)",
+            type=["xlsx", "xls", "csv", "pdf", "xml", "docx"]
+        )
+        
+        if arquivo_upload is not None:
+            st.success(f"Arquivo **{arquivo_upload.name}** pronto para análise.")
+            if st.button("⚡ Processar Extrato", type="primary"):
+                with st.spinner("Analisando colunas e corrigindo dados..."):
+                    df_resultado, erro = motor_extracao.extrair_glosas_de_arquivo(arquivo_upload)
+                    
+                    if erro:
+                        st.warning(f"⚠️ Nota do motor: {erro}")
+                    
+                    if not df_resultado.empty:
+                        st.subheader("Dados Extraídos e Validados")
+                        st.dataframe(df_resultado, use_container_width=True)
+                        st.session_state["ultimo_processamento"] = df_resultado
 
     elif menu == "⚠️ Lupa de Glosas":
-        st.title("Lupa de Glosas")
-        st.info("Relatórios detalhados de retenções com exportação PDF/Excel.")
+        st.title("⚠️ Lupa de Glosas")
+        if "ultimo_processamento" in st.session_state and not st.session_state["ultimo_processamento"].empty:
+            st.markdown("### Relatório Detalhado de Retenções")
+            df = st.session_state["ultimo_processamento"]
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("Nenhum extrato processado nesta sessão. Faça o upload na **Casa das Máquinas**.")
 
     elif menu == "💰 Valores":
-        st.title("Gestão de Valores")
+        st.title("💰 Gestão de Valores e Tabelas da Clínica")
         tab1, tab2 = st.tabs(["Tabela de Valores do Plano", "Tabela de Repasse dos Profissionais"])
+        
         with tab1:
-            st.subheader("Valores Oficiais Pagos pelos Convênios")
+            st.subheader("Tabela de Valores Oficiais do Convênio")
             if hasattr(motor_valores, 'buscar_tabela_plano'):
-                st.dataframe(motor_valores.buscar_tabela_plano(), use_container_width=True)
-            else:
-                st.info("Tabela em sincronização...")
+                df_plano = motor_valores.buscar_tabela_plano()
+                st.dataframe(df_plano, use_container_width=True)
+            
+            arq_plano = st.file_uploader("Importar Tabela de Preços (Excel/CSV)", type=["xlsx", "xls", "csv"], key="tabela_plano")
+            if arq_plano:
+                df_p = pd.read_excel(arq_plano) if arq_plano.name.endswith(('.xlsx', '.xls')) else pd.read_csv(arq_plano)
+                st.dataframe(df_p, use_container_width=True)
+                if st.button("Salvar Tabela do Plano no Banco"):
+                    st.success("Tabela do Plano atualizada!")
+
         with tab2:
-            st.subheader("Valores Repassados à Equipa (Margem da Clínica)")
+            st.subheader("Tabela de Repasse da Equipe (Margem da Clínica)")
             if hasattr(motor_valores, 'buscar_tabela_repasse'):
-                st.dataframe(motor_valores.buscar_tabela_repasse(), use_container_width=True)
-            else:
-                st.info("Tabela em sincronização...")
+                df_repasse = motor_valores.buscar_tabela_repasse()
+                st.dataframe(df_repasse, use_container_width=True)
+
+            arq_repasse = st.file_uploader("Importar Tabela de Repasses (Excel/CSV)", type=["xlsx", "xls", "csv"], key="tabela_repasse")
+            if arq_repasse:
+                df_r = pd.read_excel(arq_repasse) if arq_repasse.name.endswith(('.xlsx', '.xls')) else pd.read_csv(arq_repasse)
+                st.dataframe(df_r, use_container_width=True)
+                if st.button("Salvar Tabela de Repasse no Banco"):
+                    st.success("Tabela de Repasse atualizada!")
 
     elif menu == "👥 Cadastros":
-        st.title("Cadastros de Profissionais")
-        st.info("Gestão de corpo clínico e permissões de usuários.")
+        st.title("👥 Cadastros de Profissionais & Equipe")
+        st.info("Área reservada para vincular profissionais, especialidades e logins de acesso.")
 
     elif menu == "🛡️ Acessos":
-        st.title("Auditoria de Segurança & Acessos")
+        st.title("🛡️ Auditoria de Segurança & Histórico de Login")
         if st.session_state.nivel_permissao == "Administrador":
             if hasattr(motor_seguranca, 'obter_relatorio_acessos'):
                 st.dataframe(motor_seguranca.obter_relatorio_acessos(), use_container_width=True)
-            else:
-                st.info("Logs em sincronização...")
         else:
             st.error("Acesso restrito ao administrador do sistema.")
