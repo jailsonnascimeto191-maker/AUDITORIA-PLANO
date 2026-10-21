@@ -1,5 +1,5 @@
 """
-Motor de Valores e Tabelas de Preços.
+Motor de Valores e Tabelas de Precos.
 Gerencia a leitura multi-abas de especialidades, valores do plano e repasses da equipe.
 """
 import sqlite3
@@ -105,7 +105,7 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
         try:
             xls = pd.ExcelFile(io.BytesIO(dados))
         except Exception as e:
-            return False, f"O ficheiro enviado não é um Excel válido ou está corrompido. Detalhe técnico: {str(e)}"
+            return False, f"O ficheiro enviado nao e um Excel valido ou esta corrompido. Detalhe tecnico: {str(e)}"
         
         dfs_consolidados = []
         conexoes_especialidades = set()
@@ -134,7 +134,7 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
                     if df_aba.shape[1] >= 4:
                         df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
                     else:
-                        abas_com_erro.append(f"{sheet_name} (Estrutura incompatível)")
+                        abas_com_erro.append(f"{sheet_name} (Estrutura incompativel)")
                         continue
 
                 esp_nome = sheet_name.strip().upper()
@@ -143,7 +143,7 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
 
                 df_aba["plano"] = df_aba["plano"].replace(["", "nan", "None"], pd.NA).ffill()
                 df_aba = df_aba.dropna(subset=["valor_plano"])
-                df_aba = df_aba[~df_aba["plano"].astype(str).str.contains("PLANO DE SAÚDE", na=False, case=False)]
+                df_aba = df_aba[~df_aba["plano"].astype(str).str.contains("PLANO DE SAUDE", na=False, case=False)]
 
                 df_aba["valor_plano"] = pd.to_numeric(df_aba["valor_plano"], errors="coerce").fillna(0.0)
                 df_aba["valor_profissional"] = pd.to_numeric(df_aba["valor_profissional"], errors="coerce").fillna(0.0)
@@ -154,7 +154,7 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
                 abas_com_erro.append(f"{sheet_name} (Erro: {str(ex)})")
 
         if not dfs_consolidados:
-            return False, f"⚠️ Nenhuma regra extraída. Abas com falha: {abas_com_erro}"
+            return False, f"⚠️ Nenhuma regra extraida. Abas com falha: {abas_com_erro}"
 
         df_final = pd.concat(dfs_consolidados, ignore_index=True)
 
@@ -167,11 +167,11 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
 
         salvar_tabela_repasse(df_final)
 
-        msg_retorno = f"✅ Importação Concluída! {len(df_final)} registos distribuídos por {len(conexoes_especialidades)} abas ({', '.join(sorted(conexoes_especialidades))})."
+        msg_retorno = f"✅ Importacao Concluida! {len(df_final)} registos distribuidos por {len(conexoes_especialidades)} abas ({', '.join(sorted(conexoes_especialidades))})."
         if abas_com_erro:
             msg_retorno += f" ⚠️ Aviso nas abas: {abas_com_erro}."
 
         return True, msg_retorno
 
     except Exception as e:
-        return False, f"❌ Erro crítico ao processar Excel: {str(e)}"
+        return False, f"❌ Erro critico ao processar Excel: {str(e)}"
