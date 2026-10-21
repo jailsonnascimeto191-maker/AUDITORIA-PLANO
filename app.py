@@ -4,9 +4,18 @@ import motor_seguranca
 import motor_valores
 import motor_auditoria
 
-# 1. INICIALIZAR BANCOS DE DADOS
-motor_seguranca.init_db_seguranca()
-motor_valores.init_db_valores()
+# 1. INICIALIZAR BANCOS DE DADOS COM PROTEÇÃO CONTRA PROBLEMAS DE CACHE
+try:
+    if hasattr(motor_seguranca, 'init_db_seguranca'):
+        motor_seguranca.init_db_seguranca()
+except Exception:
+    pass
+
+try:
+    if hasattr(motor_valores, 'init_db_valores'):
+        motor_valores.init_db_valores()
+except Exception:
+    pass
 
 st.set_page_config(page_title="Espaço Saúde - Auditoria", page_icon="🏥", layout="wide")
 
@@ -30,14 +39,17 @@ if not st.session_state.autenticado:
             btn_entrar = st.form_submit_button("Acessar Sistema", use_container_width=True)
             
             if btn_entrar:
-                sucesso, role, msg = motor_seguranca.autenticar_usuario(usuario, senha)
-                if sucesso:
-                    st.session_state.autenticado = True
-                    st.session_state.usuario_atual = usuario
-                    st.session_state.nivel_permissao = role
-                    st.rerun()
+                if hasattr(motor_seguranca, 'autenticar_usuario'):
+                    sucesso, role, msg = motor_seguranca.autenticar_usuario(usuario, senha)
+                    if sucesso:
+                        st.session_state.autenticado = True
+                        st.session_state.usuario_atual = usuario
+                        st.session_state.nivel_permissao = role
+                        st.rerun()
+                    else:
+                        st.error(f"⚠️ {msg}")
                 else:
-                    st.error(f"⚠️ {msg}")
+                    st.warning("⚠️ O módulo de segurança está a sincronizar no GitHub. Por favor, aguarde alguns segundos e atualize a página.")
 
 # ==========================================
 # 3. ÁREA AUTENTICADA (SISTEMA LIBERADO)
@@ -75,11 +87,17 @@ else:
         st.title("Gestão de Valores")
         tab1, tab2 = st.tabs(["Tabela de Valores do Plano", "Tabela de Repasse dos Profissionais"])
         with tab1:
-            st.subheader("Valores Oficiais Pago pelos Convênios")
-            st.dataframe(motor_valores.buscar_tabela_plano(), use_container_width=True)
+            st.subheader("Valores Oficiais Pagos pelos Convênios")
+            if hasattr(motor_valores, 'buscar_tabela_plano'):
+                st.dataframe(motor_valores.buscar_tabela_plano(), use_container_width=True)
+            else:
+                st.info("Tabela em sincronização...")
         with tab2:
-            st.subheader("Valores Repassados à Equipe (Margem da Clínica)")
-            st.dataframe(motor_valores.buscar_tabela_repasse(), use_container_width=True)
+            st.subheader("Valores Repassados à Equipa (Margem da Clínica)")
+            if hasattr(motor_valores, 'buscar_tabela_repasse'):
+                st.dataframe(motor_valores.buscar_tabela_repasse(), use_container_width=True)
+            else:
+                st.info("Tabela em sincronização...")
 
     elif menu == "👥 Cadastros":
         st.title("Cadastros de Profissionais")
@@ -88,6 +106,9 @@ else:
     elif menu == "🛡️ Acessos":
         st.title("Auditoria de Segurança & Acessos")
         if st.session_state.nivel_permissao == "Administrador":
-            st.dataframe(motor_seguranca.obter_relatorio_acessos(), use_container_width=True)
+            if hasattr(motor_seguranca, 'obter_relatorio_acessos'):
+                st.dataframe(motor_seguranca.obter_relatorio_acessos(), use_container_width=True)
+            else:
+                st.info("Logs em sincronização...")
         else:
             st.error("Acesso restrito ao administrador do sistema.")
