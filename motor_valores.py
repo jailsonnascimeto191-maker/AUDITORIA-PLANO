@@ -1,177 +1,247 @@
 """
-Motor de Valores e Tabelas de Precos.
+Motor de Valores e Tabelas de Preços.
 Gerencia a leitura multi-abas de especialidades, valores do plano e repasses da equipe.
 """
-import sqlite3
-import pandas as pd
 import io
+import os
+import sqlite3
+import unicodedata
+from contextlib import closing
 
-DB_VALORES = "valores_clinica.db"
+import pandas as pd
+
+# Caminho absoluto: o banco fica sempre ao lado deste arquivo, não importa de
+# qual pasta o "streamlit run" for executado.
+DB_VALORES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "valores_clinica.db")
+
+COLUNAS_VALORES = ["especialidade", "plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
+COLUNAS_PLANO = ["plano", "codigo_tuss", "procedimento", "valor_plano"]
+ESPECIALIDADES_PADRAO = ["PSICOLOGIA", "PSICOPEDAGOGIA", "PSICOMOTRICIDADE", "FONOAUDIOLOGIA", "NUTRIÇÃO", "FISIOTERAPIA"]
+
+
+def _conectar():
+    return closing(sqlite3.connect(DB_VALORES, timeout=10))
+
 
 def init_db_valores():
-    conn = sqlite3.connect(DB_VALORES)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tabela_especialidades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT UNIQUE
+    with _conectar() as conn, conn:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS tabela_especialidades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT UNIQUE)"""
         )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tabela_valores_plano (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            plano TEXT,
-            codigo_tuss TEXT,
-            procedimento TEXT,
-            valor_plano REAL
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS tabela_valores_plano (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, plano TEXT, codigo_tuss TEXT,
+                procedimento TEXT, valor_plano REAL)"""
         )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tabela_repasse_profissional (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            especialidade TEXT,
-            plano TEXT,
-            tempo_atendimento TEXT,
-            valor_profissional REAL
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS tabela_repasse_profissional (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, especialidade TEXT, plano TEXT,
+                tempo_atendimento TEXT, valor_profissional REAL)"""
         )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tabela_valores_completa (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            especialidade TEXT,
-            plano TEXT,
-            tempo_atendimento TEXT,
-            valor_plano REAL,
-            valor_profissional REAL
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS tabela_valores_completa (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, especialidade TEXT, plano TEXT,
+                tempo_atendimento TEXT, valor_plano REAL, valor_profissional REAL)"""
         )
-    ''')
-    conn.commit()
-    conn.close()
 
+
+# ─────────────────────────── utilidades ───────────────────────────
+def _sem_acento(s):
+    s = unicodedata.normalize("NFKD", str(s))
+    return "".join(c for c in s if not unicodedata.combining(c)).upper()
+
+
+def _limpa_texto(v):
+    """Devolve texto limpo ou None para vazio/NaN."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return None if s.lower() in ("", "nan", "none", "nat") else s
+
+
+def _para_float(v):
+    """Converte número ou texto ('R$ 1.234,56', '80,5') em float; None se inválido."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return None if pd.isna(v) else float(v)
+    s = _sem_acento(v).replace("R$", "").replace(" ", "").strip()
+    if not s:
+        return None
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _achar_cabecalho(df_raw):
+    """Linha de cabeçalho = a primeira com pelo menos 2 palavras-chave (evita confundir títulos)."""
+    chaves = ("PLANO", "TEMPO", "VALOR", "PROFISSIONAL")
+    for idx, row in df_raw.iterrows():
+        texto = " ".join(_sem_acento(v) for v in row.values if pd.notnull(v))
+        if sum(k in texto for k in chaves) >= 2:
+            return idx
+    return None
+
+
+def _substituir_tabela(nome_tabela, df, colunas):
+    """Troca o conteúdo da tabela mantendo o esquema (to_sql 'replace' apagaria a coluna id)."""
+    base = df.copy()
+    for c in colunas:
+        if c not in base.columns:
+            base[c] = None
+    with _conectar() as conn, conn:
+        conn.execute(f"DELETE FROM {nome_tabela}")
+        base[colunas].to_sql(nome_tabela, conn, if_exists="append", index=False)
+
+
+# ─────────────────────────── especialidades ───────────────────────────
 def buscar_especialidades():
-    conn = sqlite3.connect(DB_VALORES)
-    cursor = conn.cursor()
-    cursor.execute("SELECT nome FROM tabela_especialidades UNION SELECT DISTINCT especialidade FROM tabela_valores_completa ORDER BY nome")
-    lista = [row[0] for row in cursor.fetchall() if row[0]]
-    conn.close()
-    if not lista:
-        lista = ["PSICOLOGIA", "PSICOPEDAGOGIA", "PSICOMOTRICIDADE", "FONOAUDIOLOGIA", "NUTRIÇÃO", "FISIOTERAPIA"]
-    return lista
+    try:
+        with _conectar() as conn:
+            rows = conn.execute(
+                "SELECT nome FROM tabela_especialidades "
+                "UNION SELECT DISTINCT especialidade FROM tabela_valores_completa ORDER BY 1"
+            ).fetchall()
+        lista = [r[0] for r in rows if r[0]]
+    except sqlite3.Error:
+        lista = []
+    return lista or list(ESPECIALIDADES_PADRAO)
+
 
 def adicionar_especialidade(nome):
-    conn = sqlite3.connect(DB_VALORES)
-    cursor = conn.cursor()
+    """Retorna (ok, mensagem)."""
+    esp = (nome or "").strip().upper()
+    if not esp:
+        return False, "Informe o nome da especialidade."
     try:
-        esp_limpa = nome.strip().upper()
-        cursor.execute("INSERT OR IGNORE INTO tabela_especialidades (nome) VALUES (?)", (esp_limpa,))
-        conn.commit()
-    except Exception:
-        pass
-    conn.close()
+        with _conectar() as conn, conn:
+            cur = conn.execute("INSERT OR IGNORE INTO tabela_especialidades (nome) VALUES (?)", (esp,))
+        if cur.rowcount == 0:
+            return False, f"A especialidade {esp} já existe."
+        return True, f"Especialidade {esp} cadastrada."
+    except sqlite3.Error as e:
+        return False, f"Erro ao cadastrar: {e}"
 
+
+# ─────────────────────────── leitura / gravação ───────────────────────────
 def buscar_tabela_plano():
-    conn = sqlite3.connect(DB_VALORES)
-    df = pd.read_sql_query("SELECT * FROM tabela_valores_plano", conn)
-    conn.close()
-    return df
+    try:
+        with _conectar() as conn:
+            return pd.read_sql_query(f"SELECT {', '.join(COLUNAS_PLANO)} FROM tabela_valores_plano", conn)
+    except Exception:
+        return pd.DataFrame(columns=COLUNAS_PLANO)
+
 
 def buscar_tabela_repasse():
-    conn = sqlite3.connect(DB_VALORES)
+    """Tabela completa (especialidade, plano, tempo, valor do plano, repasse)."""
     try:
-        df = pd.read_sql_query("SELECT * FROM tabela_valores_completa", conn)
-        if not df.empty and 'especialidade' in df.columns:
-            df['especialidade'] = df['especialidade'].astype(str).str.upper().str.strip()
+        with _conectar() as conn:
+            df = pd.read_sql_query(f"SELECT {', '.join(COLUNAS_VALORES)} FROM tabela_valores_completa", conn)
+        if not df.empty:
+            df["especialidade"] = df["especialidade"].astype(str).str.upper().str.strip()
+        return df
     except Exception:
-        df = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_plano", "valor_profissional"])
-    conn.close()
-    return df
+        return pd.DataFrame(columns=COLUNAS_VALORES)
+
 
 def salvar_tabela_plano(df):
-    conn = sqlite3.connect(DB_VALORES)
-    df.to_sql("tabela_valores_plano", conn, if_exists="replace", index=False)
-    conn.close()
+    _substituir_tabela("tabela_valores_plano", df, COLUNAS_PLANO)
+
 
 def salvar_tabela_repasse(df):
-    conn = sqlite3.connect(DB_VALORES)
-    if not df.empty and 'especialidade' in df.columns:
-        df['especialidade'] = df['especialidade'].astype(str).str.upper().str.strip()
-    df.to_sql("tabela_valores_completa", conn, if_exists="replace", index=False)
-    conn.close()
+    df = df.copy()  # não altera o DataFrame de quem chamou
+    if not df.empty and "especialidade" in df.columns:
+        df["especialidade"] = df["especialidade"].astype(str).str.upper().str.strip()
+    _substituir_tabela("tabela_valores_completa", df, COLUNAS_VALORES)
 
+
+def consultar_valor(especialidade, plano, tempo=None):
+    """Devolve {'valor_plano', 'valor_profissional'} para a combinação, ou None se não houver."""
+    df = buscar_tabela_repasse()
+    if df.empty:
+        return None
+    m = (df["especialidade"].map(_sem_acento) == _sem_acento(especialidade).strip()) & (
+        df["plano"].astype(str).map(_sem_acento).str.strip() == _sem_acento(plano).strip()
+    )
+    if tempo:
+        com_tempo = m & (df["tempo_atendimento"].astype(str).str.strip() == str(tempo).strip())
+        if com_tempo.any():
+            m = com_tempo
+    achados = df[m]
+    if achados.empty:
+        return None
+    linha = achados.iloc[0]
+    return {"valor_plano": float(linha["valor_plano"]), "valor_profissional": float(linha["valor_profissional"])}
+
+
+# ─────────────────────────── importação do Excel ───────────────────────────
 def processar_e_salvar_excel_multi_abas(arquivo_upload):
+    """Lê todas as abas (cada aba = uma especialidade). Retorna (ok, mensagem)."""
     try:
         arquivo_upload.seek(0)
-        dados = arquivo_upload.read()
-        try:
-            xls = pd.ExcelFile(io.BytesIO(dados))
-        except Exception as e:
-            return False, f"O ficheiro enviado nao e um Excel valido ou esta corrompido. Detalhe tecnico: {str(e)}"
-        
-        dfs_consolidados = []
-        conexoes_especialidades = set()
-        abas_com_erro = []
-
-        for sheet_name in xls.sheet_names:
-            try:
-                df_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None, dtype=object)
-                if df_raw.empty:
-                    abas_com_erro.append(f"{sheet_name} (Aba vazia)")
-                    continue
-
-                cab_idx = None
-                for idx, row in df_raw.iterrows():
-                    linha_str = " ".join([str(val).upper() for val in row.values if pd.notnull(val)])
-                    if "PLANO" in linha_str or "VALOR PLANO" in linha_str or "TEMPO" in linha_str:
-                        cab_idx = idx
-                        break
-
-                if cab_idx is not None:
-                    df_aba = df_raw.iloc[cab_idx + 1:].copy()
-                    df_aba = df_aba.iloc[:, :4]
-                    df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
-                else:
-                    df_aba = df_raw.iloc[:, :4].copy()
-                    if df_aba.shape[1] >= 4:
-                        df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
-                    else:
-                        abas_com_erro.append(f"{sheet_name} (Estrutura incompativel)")
-                        continue
-
-                esp_nome = sheet_name.strip().upper()
-                df_aba["especialidade"] = esp_nome
-                conexoes_especialidades.add(esp_nome)
-
-                df_aba["plano"] = df_aba["plano"].replace(["", "nan", "None"], pd.NA).ffill()
-                df_aba = df_aba.dropna(subset=["valor_plano"])
-                df_aba = df_aba[~df_aba["plano"].astype(str).str.contains("PLANO DE SAUDE", na=False, case=False)]
-
-                df_aba["valor_plano"] = pd.to_numeric(df_aba["valor_plano"], errors="coerce").fillna(0.0)
-                df_aba["valor_profissional"] = pd.to_numeric(df_aba["valor_profissional"], errors="coerce").fillna(0.0)
-                df_aba["tempo_atendimento"] = df_aba["tempo_atendimento"].astype(str).str.strip()
-
-                dfs_consolidados.append(df_aba)
-            except Exception as ex:
-                abas_com_erro.append(f"{sheet_name} (Erro: {str(ex)})")
-
-        if not dfs_consolidados:
-            return False, f"⚠️ Nenhuma regra extraida. Abas com falha: {abas_com_erro}"
-
-        df_final = pd.concat(dfs_consolidados, ignore_index=True)
-
-        conn = sqlite3.connect(DB_VALORES)
-        cursor = conn.cursor()
-        for esp in conexoes_especialidades:
-            cursor.execute("INSERT OR IGNORE INTO tabela_especialidades (nome) VALUES (?)", (esp,))
-        conn.commit()
-        conn.close()
-
-        salvar_tabela_repasse(df_final)
-
-        msg_retorno = f"✅ Importacao Concluida! {len(df_final)} registos distribuidos por {len(conexoes_especialidades)} abas ({', '.join(sorted(conexoes_especialidades))})."
-        if abas_com_erro:
-            msg_retorno += f" ⚠️ Aviso nas abas: {abas_com_erro}."
-
-        return True, msg_retorno
-
+        xls = pd.ExcelFile(io.BytesIO(arquivo_upload.read()))
     except Exception as e:
-        return False, f"❌ Erro critico ao processar Excel: {str(e)}"
+        return False, (
+            "O arquivo não é um Excel válido ou está corrompido. "
+            f"Se for .xls, instale 'xlrd'; se for .xlsx, instale 'openpyxl'. Detalhe: {e}"
+        )
+
+    dfs, abas_ok, abas_erro = [], [], []
+    for aba in xls.sheet_names:
+        try:
+            df_raw = pd.read_excel(xls, sheet_name=aba, header=None, dtype=object)
+            if df_raw.empty:
+                abas_erro.append(f"{aba} (vazia)")
+                continue
+            if df_raw.shape[1] < 4:
+                abas_erro.append(f"{aba} (menos de 4 colunas)")
+                continue
+
+            cab = _achar_cabecalho(df_raw)
+            corpo = df_raw.iloc[cab + 1:] if cab is not None else df_raw
+            df_aba = corpo.iloc[:, :4].copy()
+            df_aba.columns = ["plano", "tempo_atendimento", "valor_plano", "valor_profissional"]
+
+            # Plano aparece só na 1ª linha de cada bloco -> preenche para baixo
+            df_aba["plano"] = df_aba["plano"].map(_limpa_texto).ffill().fillna("Sem plano")
+            df_aba["valor_plano"] = df_aba["valor_plano"].map(_para_float)
+            df_aba["valor_profissional"] = df_aba["valor_profissional"].map(_para_float)
+            df_aba = df_aba.dropna(subset=["valor_plano"])
+            df_aba["valor_profissional"] = df_aba["valor_profissional"].fillna(0.0)
+            df_aba = df_aba[~df_aba["plano"].map(_sem_acento).str.contains("PLANO DE SAUDE", na=False)]
+            df_aba["tempo_atendimento"] = df_aba["tempo_atendimento"].map(_limpa_texto).fillna("")
+            esp = aba.strip().upper()
+            df_aba["especialidade"] = esp
+
+            if df_aba.empty:
+                abas_erro.append(f"{aba} (nenhuma linha com valor)")
+                continue
+            dfs.append(df_aba[COLUNAS_VALORES])
+            abas_ok.append(esp)
+        except Exception as ex:
+            abas_erro.append(f"{aba} ({ex})")
+
+    if not dfs:
+        return False, "Nenhuma regra extraída. Abas com falha: " + ("; ".join(abas_erro) or "nenhuma aba legível")
+
+    df_final = pd.concat(dfs, ignore_index=True)
+    try:
+        salvar_tabela_repasse(df_final)
+        with _conectar() as conn, conn:
+            conn.executemany("INSERT OR IGNORE INTO tabela_especialidades (nome) VALUES (?)", [(n,) for n in abas_ok])
+    except Exception as e:
+        return False, f"Erro ao gravar no banco: {e}"
+
+    msg = f"Importação concluída: {len(df_final)} registros em {len(abas_ok)} abas ({', '.join(sorted(abas_ok))})."
+    if abas_erro:
+        msg += f" Abas ignoradas: {'; '.join(abas_erro)}."
+    return True, msg
