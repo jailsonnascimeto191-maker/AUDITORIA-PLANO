@@ -5,7 +5,6 @@ import motor_seguranca
 import motor_valores
 import motor_extracao
 
-# Inicialização dos Bancos de Dados de Segurança e Valores
 try:
     if hasattr(motor_seguranca, 'init_db_seguranca'):
         motor_seguranca.init_db_seguranca()
@@ -25,9 +24,6 @@ PLANOS_SAUDE = [
     "SulAmérica", "Amil", "Cassi", "GEAP", "Postal Saúde", "Assefaz", "Outros"
 ]
 
-# ==========================================
-# ESTILIZAÇÃO VISUAL PERSONALIZADA (CSS)
-# ==========================================
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; }
@@ -50,9 +46,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# 1. CONTROLE DE ACESSO & SEGURANÇA (LOGIN)
-# ==========================================
 if 'autenticado' not in st.session_state:
     st.session_state.autenticado = False
     st.session_state.usuario_atual = None
@@ -86,11 +79,8 @@ if not st.session_state.autenticado:
                     else:
                         st.error(f"⚠️ {msg}")
                 else:
-                    st.warning("⚠️ O módulo de segurança está sincronizando. Aguarde alguns segundos.")
+                    st.warning("⚠️ O módulo de segurança está a sincronizar.")
 
-# ==========================================
-# 2. SISTEMA COMPLETO (ÁREA RESTRITA)
-# ==========================================
 else:
     menus_disponiveis = ["📊 Painel", "📥 Casa das Máquinas", "⚠️ Lupa de Glosas"]
     if st.session_state.nivel_permissao == "Administrador":
@@ -107,9 +97,6 @@ else:
         st.markdown("---")
         menu = st.radio("Navegação", menus_disponiveis, label_visibility="collapsed")
 
-    # ----------------------------------------------------------------------
-    # MENU 1: PAINEL DE REPASSES & MÉTRICAS
-    # ----------------------------------------------------------------------
     if menu == "📊 Painel":
         st.title("📊 Painel Geral de Faturamento & Repasses")
         st.caption("Visão consolidada das auditorias, margens de lucro e valores a repassar.")
@@ -154,9 +141,6 @@ else:
             c3.metric("Total Glosado", "R$ 0,00")
             st.info("💡 Faça o upload de um extrato na **Casa das Máquinas** para gerar métricas automáticas.")
 
-    # ----------------------------------------------------------------------
-    # MENU 2: CASA DAS MÁQUINAS (UPLOAD & AUDITORIA INTEGRADA)
-    # ----------------------------------------------------------------------
     elif menu == "📥 Casa das Máquinas":
         st.title("📥 Casa das Máquinas")
         st.caption("Central de upload para cruzamento do demonstrativo do convênio com os relatórios dos profissionais.")
@@ -176,12 +160,10 @@ else:
         
         with col_u1:
             st.subheader("📄 Demonstrativo / Extrato do Plano")
-            st.caption("Suba o arquivo oficial recebido da operadora (PDF, Excel, CSV, XML ou DOCX).")
             arquivo_dem = st.file_uploader("Arquivo do Convênio", type=["xlsx", "xls", "csv", "pdf", "xml", "docx"], key="u_demonstrativo")
             
         with col_u2:
             st.subheader("👥 Relatório de Frequência / Presença da Equipe")
-            st.caption("Suba a planilha interna de sessões/atendimentos entregue pelos profissionais.")
             arquivo_prof = st.file_uploader("Planilha de Atendimento dos Profissionais (Opcional)", type=["xlsx", "xls", "csv"], key="u_profissionais")
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -196,7 +178,7 @@ else:
                         st.info(f"ℹ️ Detalhe do processamento: {erro}")
                         
                     if not df_res.empty:
-                        st.success(f"✅ Processamento concluído! {len(df_res)} registros validados com sucesso.")
+                        st.success(f"✅ Processamento concluído! {len(df_res)} registos validados com sucesso.")
                         
                         mapeamento = df_res.attrs.get("mapeamento", {})
                         if mapeamento:
@@ -212,13 +194,10 @@ else:
                                 df_p = pd.read_excel(arquivo_prof) if arquivo_prof.name.endswith(('.xlsx', '.xls')) else pd.read_csv(arquivo_prof)
                                 st.markdown("### 📋 Comparativo com Relatório da Equipe")
                                 st.dataframe(df_p.head(10), use_container_width=True)
-                                st.caption("Cruzamento com atestados de presença registrado no sistema.")
+                                st.caption("Cruzamento com atestados de presença registados no sistema.")
                             except Exception as e:
                                 st.warning(f"Não foi possível ler a planilha de presença: {e}")
 
-    # ----------------------------------------------------------------------
-    # MENU 3: LUPA DE GLOSAS (ANÁLISE DETALHADA E EXPORTAÇÃO)
-    # ----------------------------------------------------------------------
     elif menu == "⚠️ Lupa de Glosas":
         st.title("⚠️ Lupa de Glosas & Recuperação de Retenções")
         st.caption("Análise granular por paciente e motivo de corte das operadoras")
@@ -271,9 +250,6 @@ else:
         else:
             st.info("Nenhum arquivo auditado no momento. Dirija-se à **Casa das Máquinas** e suba o demonstrativo do plano.")
 
-    # ----------------------------------------------------------------------
-    # MENU 4: VALORES E REPASSES (SEPARADOS POR ESPECIALIDADE)
-    # ----------------------------------------------------------------------
     elif menu == "💰 Valores":
         st.title("💰 Gestão de Tabelas de Preços e Repasses")
         st.info("💡 **Atenção:** Importe a sua planilha oficial da clínica abaixo. O sistema lerá todas as abas automaticamente e distribuirá cada valor para a sua respectiva especialidade.")
@@ -295,7 +271,6 @@ else:
         with tab2:
             st.subheader("2. Tabela de Repasses por Especialidade (Multi-abas)")
             
-            # 📥 UPLOAD INTELIGENTE DA PLANILHA MULTI-ABAS
             st.markdown("#### 📥 Importação em Massa (Planilha com Abas por Especialidade)")
             file_repasse_multi = st.file_uploader("Subir Planilha Oficial da Clínica (Excel)", type=["xlsx", "xls"], key="t_repasse_multi_file")
             if file_repasse_multi:
@@ -310,7 +285,6 @@ else:
 
             st.markdown("---")
             
-            # Buscar a lista dinâmica de especialidades do banco
             especialidades_db = motor_valores.buscar_especialidades() if hasattr(motor_valores, 'buscar_especialidades') else ["Geral"]
             
             col_esp1, col_esp2 = st.columns([3, 1])
@@ -327,7 +301,6 @@ else:
                             st.success("Cadastrada!")
                             st.rerun()
             
-            # Buscar a tabela principal de repasses
             df_r_salva = motor_valores.buscar_tabela_repasse() if hasattr(motor_valores, 'buscar_tabela_repasse') else pd.DataFrame()
             
             if not df_r_salva.empty and 'especialidade' not in df_r_salva.columns:
@@ -336,7 +309,6 @@ else:
             if df_r_salva.empty:
                 df_r_salva = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
             
-            # Filtrar a tabela apenas para a especialidade selecionada
             df_esp_atual = df_r_salva[df_r_salva['especialidade'].astype(str).str.upper() == str(esp_selecionada).upper()].copy()
             if df_esp_atual.empty:
                 df_esp_atual = pd.DataFrame(columns=["especialidade", "plano", "tempo_atendimento", "valor_profissional"])
@@ -363,9 +335,6 @@ else:
                 st.success(f"✅ Tabela de repasse de {esp_selecionada} salva no banco de dados com sucesso!")
                 st.rerun()
 
-    # ----------------------------------------------------------------------
-    # MENU 5: CADASTROS (PROFISSIONAIS, USUÁRIOS E RECEPÇÃO)
-    # ----------------------------------------------------------------------
     elif menu == "👥 Cadastros":
         st.title("👥 Cadastros de Profissionais & Acessos da Recepção")
         
@@ -387,7 +356,7 @@ else:
                 btn_cad_p = st.form_submit_button("Salvar Profissional")
                 if btn_cad_p:
                     if nome_prof.strip():
-                        st.success(f"✅ Profissional **{nome_prof}** ({especialidade_prof}) registrado com sucesso no corpo clínico!")
+                        st.success(f"✅ Profissional **{nome_prof}** ({especialidade_prof}) registado com sucesso no corpo clínico!")
                     else:
                         st.error("Por favor, preencha ao menos o Nome.")
 
@@ -411,9 +380,6 @@ else:
             else:
                 st.warning("Apenas administradores podem criar novos usuários de acesso.")
 
-    # ----------------------------------------------------------------------
-    # MENU 6: ACESSOS (AUDITORIA DE SEGURANÇA E LOGS)
-    # ----------------------------------------------------------------------
     elif menu == "🛡️ Acessos":
         st.title("🛡️ Auditoria de Segurança & Histórico de Logins")
         st.markdown("Registro imutável de todas as tentativas e acessos ao sistema.")
@@ -423,6 +389,6 @@ else:
                 df_logs = motor_seguranca.obter_relatorio_acessos()
                 st.dataframe(df_logs, use_container_width=True)
             else:
-                st.info("Carregando logs de auditoria...")
+                st.info("A carregar logs de auditoria...")
         else:
             st.error("Acesso restrito ao administrador do sistema.")
