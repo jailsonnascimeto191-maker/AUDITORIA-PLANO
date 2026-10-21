@@ -3,3 +3,4 @@ pandas
 openpyxl
 PyMuPDF
 fpdf
+pip install pandas numpy reportlab XlsxWriter
