@@ -1,5 +1,5 @@
 """
-Extrator inteligente de glosas com Forward Fill para dados hierárquicos.
+Extrator inteligente de glosas com Forward Fill para dados hierárquicos e Trava de Quantidades.
 """
 import csv
 import io
@@ -35,7 +35,7 @@ COLUNAS_PADRAO_GLOSAS = [
 ]
 
 # --------------------------------------------------------------------------
-# Configuração dos campos
+# Configuração dos campos (com Trava de Colunas de Quantidade)
 # --------------------------------------------------------------------------
 CAMPOS = {
     "Data do evento": dict(
@@ -85,20 +85,20 @@ CAMPOS = {
              "VALOR PLANO", "INFORMADO", "APRESENTADO", "COBRADO", "FATURADO",
              "VALOR", "VLR", "VL"],
         excl=["GLOSA", "PAGO", "RECEBIDO", "LIBERADO", "LIQUIDO", "RETIDO", "APROVADO",
-              "PAGAMENTO", "UNIT"],
+              "PAGAMENTO", "UNIT", "QTD", "QTDE", "QUANTIDADE", "SOLICITADA", "SESSAO"],
     ),
     "Valor pago": dict(
         tipo="dinheiro",
         sin=["VALOR PAGO", "VALOR LIBERADO", "VALOR RECEBIDO", "VALOR LIQUIDO",
              "VALOR APROVADO", "VALOR ACEITO", "VL PAGO", "VLR PAGO", "PAGO",
              "RECEBIDO", "LIBERADO", "LIQUIDO", "APROVADO"],
-        excl=["GLOSA", "INFORMADO", "APRESENTADO", "COBRADO"],
+        excl=["GLOSA", "INFORMADO", "APRESENTADO", "COBRADO", "QTD", "QTDE", "QUANTIDADE", "SOLICITADA", "SESSAO"],
     ),
     "Valor da glosa": dict(
         tipo="dinheiro",
         sin=["VALOR GLOSA", "VALOR GLOSADO", "VL GLOSA", "VLR GLOSA", "VALOR RETIDO",
              "GLOSADO", "GLOSA", "RETIDO"],
-        excl=["MOTIVO", "JUSTIFICATIVA", "DESCRICAO", "CODIGO", "COD", "OBS", "TIPO"],
+        excl=["MOTIVO", "JUSTIFICATIVA", "DESCRICAO", "CODIGO", "COD", "OBS", "TIPO", "QTD", "QTDE", "QUANTIDADE"],
     ),
     "Motivo da glosa": dict(
         tipo="texto",
@@ -338,14 +338,10 @@ def _montar_saida(df, mapa):
     s = col("Nome do paciente")
     out["Nome do paciente"] = s.apply(_txt) if s is not None else pd.NA
 
-    # 2. A MÁGICA: Preenchimento para Baixo (Forward Fill)
-    # Copia o Nome/Protocolo/Data da linha de cima para as linhas vazias abaixo!
+    # 2. Preenchimento para Baixo (Forward Fill para dados hierárquicos)
     for c in ["Data do evento", "Protocolo", "Doc Original", "Nome do paciente"]:
-        # Substitui textos que representam "vazio" por NaN real
         out[c] = out[c].replace(["", "-", "Não identificado"], pd.NA)
-        # Preenche os NaNs com a informação da última linha válida acima
         out[c] = out[c].ffill()
-        # Se mesmo assim sobrou algo vazio na planilha inteira, põe o traço
         if c == "Nome do paciente":
             out[c] = out[c].fillna("Não identificado")
         else:
@@ -375,7 +371,11 @@ def _montar_saida(df, mapa):
 
     s = col("Motivo da glosa")
     out["Motivo da glosa"] = s.apply(_txt) if s is not None else ""
-    out.loc[(out["Motivo da glosa"] == "") & (out["Valor da glosa"] > 0), "Motivo da glosa"] = "Glosa identificada no demonstrativo"
+    
+    # Tratamento para Glosa Silenciosa (Maria Izabel): Glosa > 0 sem justificativa no arquivo
+    out.loc[(out["Motivo da glosa"] == "") & (out["Valor da glosa"] > 0), "Motivo da glosa"] = (
+        "Glosa Silenciosa: Valor zerado ou cortado sem justificativa informada no demonstrativo"
+    )
     
     return out[COLUNAS_PADRAO_GLOSAS]
 
@@ -411,11 +411,9 @@ def mapear_dataframe_para_glosas(df_bruto, somente_glosas=True):
 # --------------------------------------------------------------------------
 def _linhas_texto_para_df(linhas):
     regs = []
-    # A MÁGICA: O contexto guarda o que leu na linha de cima!
     contexto = {"data": "-", "nome": "", "protocolo": "-", "guia": "-"}
 
     for ln in linhas:
-        # Tenta achar protocolo ou guia soltos pela linha
         m_prot = re.search(r"(?:protocolo|prot\.)[\s:]*([A-Z0-9.-]{5,20})", ln, re.I)
         if m_prot: contexto["protocolo"] = m_prot.group(1)
 
@@ -428,7 +426,6 @@ def _linhas_texto_para_df(linhas):
         valores = _RE_DIN_TEXTO.findall(ln)
         cod = re.search(r"\b(\d{8}|\d{1,2}\.\d{2}\.\d{2}\.\d{2}-?\d?)\b", ln)
 
-        # Se a linha não tem dinheiro nem código, tem grande probabilidade de ser o NOME do paciente
         if not valores and not cod and len(ln) > 6 and _RE_NOME.match(ln):
             palavras = _norm(ln).split()
             if 2 <= len(palavras) <= 6 and not (set(palavras) & _PALAVRAS_PROC):
