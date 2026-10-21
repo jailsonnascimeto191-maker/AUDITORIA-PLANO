@@ -167,7 +167,7 @@ def processar_e_salvar_excel_multi_abas(arquivo_upload):
 
         salvar_tabela_repasse(df_final)
 
-        msg_retorno = f"✅ Importação Master Concluída! {len(df_final)} registos distribuídos por {len(conexoes_especialidades)} abas ({', '.join(sorted(conexoes_especialidades))})."
+        msg_retorno = f"✅ Importação Concluída! {len(df_final)} registos distribuídos por {len(conexoes_especialidades)} abas ({', '.join(sorted(conexoes_especialidades))})."
         if abas_com_erro:
             msg_retorno += f" ⚠️ Aviso nas abas: {abas_com_erro}."
 
