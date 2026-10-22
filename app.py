@@ -2,6 +2,7 @@ import io
 import inspect
 import sqlite3
 from contextlib import closing
+from types import SimpleNamespace
 
 import pandas as pd
 import streamlit as st
@@ -16,6 +17,7 @@ st.set_page_config(
 
 import motor_seguranca  # noqa: E402
 import motor_extracao  # noqa: E402
+import paginas_relatorios  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────
@@ -733,6 +735,16 @@ def secao_valores(tipo):
 
 
 # ─────────────────────────────────────────────────────────────
+# Helpers entregues às páginas de relatórios (paginas_relatorios.py)
+# ─────────────────────────────────────────────────────────────
+H = SimpleNamespace(
+    cabecalho=cabecalho, secao=secao, tabela=tabela, brl=brl,
+    FULL_BTN=FULL_BTN, FULL_DL=FULL_DL, valores_df=valores_df,
+    listar_profissionais=listar_profissionais, PLANOS_SAUDE=PLANOS_SAUDE,
+    registrar_log=registrar_log,
+)
+
+# ─────────────────────────────────────────────────────────────
 # Sessão
 # ─────────────────────────────────────────────────────────────
 for chave, padrao in (("autenticado", False), ("usuario_atual", None), ("nivel_permissao", None)):
@@ -775,7 +787,8 @@ if not st.session_state.autenticado:
 # ─────────────────────────────────────────────────────────────
 # Navegação
 # ─────────────────────────────────────────────────────────────
-MENUS_BASE = ["Painel", "Casa das Máquinas", "Lupa de Glosas"]
+MENUS_BASE = ["Painel", "Casa das Máquinas", "Lupa de Glosas",
+              "Produção do Profissional", "Relatório de Glosas", "Faturamento x Recebimento"]
 MENUS_ADMIN = ["Valores", "Cadastros", "Acessos"]
 eh_admin = st.session_state.nivel_permissao == "Administrador"
 menus = MENUS_BASE + (MENUS_ADMIN if eh_admin else [])
@@ -867,6 +880,15 @@ elif menu == "Lupa de Glosas":
         st.caption(f"{len(df_view)} de {len(df_proc)} registros")
         tabela(df_view)
         baixar(df_view, "lupa_glosas")
+
+elif menu == "Produção do Profissional":
+    paginas_relatorios.render_producao(H)
+
+elif menu == "Relatório de Glosas":
+    paginas_relatorios.render_glosas(H)
+
+elif menu == "Faturamento x Recebimento":
+    paginas_relatorios.render_faturamento(H)
 
 elif menu == "Valores":
     cabecalho(
