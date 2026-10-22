@@ -105,11 +105,6 @@ def _hash(senha, salt_hex=None, iteracoes=ITERACOES):
     return h.hex(), salt.hex()
 
 
-# Compatibilidade com código antigo
-def _gerar_hash_senha(senha, salt_hex=None):
-    return _hash(senha, salt_hex, 100000 if salt_hex else ITERACOES)
-
-
 def validar_forca_senha(senha):
     """Retorna (ok, mensagem)."""
     if len(senha or "") < SENHA_MIN:

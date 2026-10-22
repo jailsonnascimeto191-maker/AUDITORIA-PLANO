@@ -20,7 +20,8 @@ import motor_relatorios as mr
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro",
          "Outubro", "Novembro", "Dezembro"]
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-TIPOS_DEMONSTRATIVO = ["xlsx", "xls", "csv", "pdf", "xml", "docx"]
+# Formatos que o motor_extracao sabe ler (usado também na Casa das Máquinas)
+TIPOS_DEMONSTRATIVO = ["xlsx", "xlsm", "xls", "csv", "txt", "pdf", "xml", "docx", "html", "htm"]
 TIPOS_PLANILHA = ["xlsx", "xls", "csv"]
 
 
