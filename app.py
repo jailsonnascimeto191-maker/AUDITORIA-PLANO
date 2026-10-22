@@ -1,5 +1,7 @@
+import html
 import io
 import inspect
+import time
 import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
@@ -747,8 +749,27 @@ H = SimpleNamespace(
 # ─────────────────────────────────────────────────────────────
 # Sessão
 # ─────────────────────────────────────────────────────────────
-for chave, padrao in (("autenticado", False), ("usuario_atual", None), ("nivel_permissao", None)):
+for chave, padrao in (("autenticado", False), ("usuario_atual", None), ("nivel_permissao", None),
+                      ("trocar_senha", False), ("ultima_atividade", 0.0)):
     st.session_state.setdefault(chave, padrao)
+
+INATIVIDADE_MIN = 30  # encerra a sessão após 30 minutos sem uso
+
+
+def sair(motivo=None):
+    for k in ("autenticado", "usuario_atual", "nivel_permissao", "ultimo_processamento", "trocar_senha"):
+        st.session_state.pop(k, None)
+    if motivo:
+        st.session_state["flash"] = ("info", motivo)
+    st.rerun()
+
+
+if st.session_state.get("autenticado"):
+    agora = time.time()
+    ultima = st.session_state.get("ultima_atividade") or agora
+    if agora - ultima > INATIVIDADE_MIN * 60:
+        sair(f"Sua sessão foi encerrada após {INATIVIDADE_MIN} minutos sem uso. Entre novamente.")
+    st.session_state["ultima_atividade"] = agora
 
 # ─────────────────────────────────────────────────────────────
 # Login
@@ -762,6 +783,7 @@ if not st.session_state.autenticado:
             <p>Auditoria, faturamento e repasses</p></div>""",
             unsafe_allow_html=True,
         )
+        mostrar_flash()
         with st.form("form_login"):
             usuario = st.text_input("Usuário")
             senha = st.text_input("Senha", type="password")
@@ -778,10 +800,48 @@ if not st.session_state.autenticado:
                 except Exception as e:
                     sucesso, role, msg = False, None, f"Falha no módulo de segurança: {e}"
                 if sucesso:
-                    st.session_state.update(autenticado=True, usuario_atual=usuario, nivel_permissao=role)
+                    nome = usuario.lower().strip()
+                    trocar = bool(getattr(motor_seguranca, "precisa_trocar_senha", lambda u: False)(nome))
+                    st.session_state.update(
+                        autenticado=True, usuario_atual=nome, nivel_permissao=role,
+                        trocar_senha=trocar, ultima_atividade=time.time(),
+                    )
                     st.rerun()
                 else:
                     st.error(msg)
+    st.stop()
+
+# ─────────────────────────────────────────────────────────────
+# Troca de senha obrigatória (primeiro acesso ou senha temporária)
+# ─────────────────────────────────────────────────────────────
+if st.session_state.get("trocar_senha"):
+    _, centro, _ = st.columns([1, 1.1, 1])
+    with centro:
+        st.markdown(
+            """<div class='login-marca'><div class='logo'>🔒</div>
+            <h1>Crie uma nova senha</h1>
+            <p>Por segurança, troque a senha antes de continuar.</p></div>""",
+            unsafe_allow_html=True,
+        )
+        with st.form("form_troca_obrigatoria"):
+            atual = st.text_input("Senha atual", type="password")
+            nova = st.text_input("Nova senha", type="password",
+                                 help="Mínimo de 8 caracteres, com letras e números.")
+            conf = st.text_input("Repita a nova senha", type="password")
+            ok_btn = st.form_submit_button("Salvar nova senha", **FULL_FORM_BTN)
+        if ok_btn:
+            if nova != conf:
+                st.error("As duas senhas novas não são iguais.")
+            else:
+                ok, msg = motor_seguranca.alterar_senha(st.session_state.usuario_atual, atual, nova)
+                if ok:
+                    st.session_state.trocar_senha = False
+                    avisar("success", msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        if st.button("Sair", **FULL_BTN):
+            sair()
     st.stop()
 
 # ─────────────────────────────────────────────────────────────
@@ -800,22 +860,33 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown(
-        f"<div class='usuario'><b>{str(st.session_state.usuario_atual).capitalize()}</b><br>"
-        f"<span>Perfil: {st.session_state.nivel_permissao}</span></div>",
+        f"<div class='usuario'><b>{html.escape(str(st.session_state.usuario_atual).capitalize())}</b><br>"
+        f"<span>Perfil: {html.escape(str(st.session_state.nivel_permissao))}</span></div>",
         unsafe_allow_html=True,
     )
     menu = st.radio("Navegação", menus, label_visibility="collapsed")
     st.markdown("---")
+    with st.expander("Alterar minha senha"):
+        with st.form("form_minha_senha", clear_on_submit=True):
+            atual = st.text_input("Senha atual", type="password")
+            nova = st.text_input("Nova senha", type="password")
+            conf = st.text_input("Repita a nova senha", type="password")
+            trocar = st.form_submit_button("Salvar", **FULL_FORM_BTN)
+        if trocar:
+            if nova != conf:
+                st.error("As senhas novas não são iguais.")
+            else:
+                ok, msg = motor_seguranca.alterar_senha(st.session_state.usuario_atual, atual, nova)
+                (st.success if ok else st.error)(msg)
     if st.button("Sair do sistema", **FULL_BTN):
-        for k in ("autenticado", "usuario_atual", "nivel_permissao", "ultimo_processamento"):
-            st.session_state.pop(k, None)
-        st.rerun()
+        sair()
 
 if menu in MENUS_ADMIN and not eh_admin:
     st.error("Você não tem permissão para acessar esta área.")
     st.stop()
 
 df_proc = st.session_state.get("ultimo_processamento", pd.DataFrame())
+mostrar_flash()
 
 # ─────────────────────────────────────────────────────────────
 # Páginas
@@ -982,8 +1053,63 @@ elif menu == "Cadastros":
                     st.rerun()
 
 elif menu == "Acessos":
-    cabecalho("Auditoria de segurança", "Registro de acessos ao sistema e histórico de alterações.")
-    aba_ac, aba_log = st.tabs(["Acessos", "Histórico de alterações"])
+    cabecalho("Segurança e acessos", "Usuários do sistema, registro de acessos e histórico de alterações.")
+    aba_us, aba_ac, aba_log = st.tabs(["Usuários", "Acessos", "Histórico de alterações"])
+    with aba_us:
+        secao("Usuários cadastrados")
+        df_us = motor_seguranca.listar_usuarios()
+        tabela(df_us)
+
+        c_novo, c_edit = st.columns(2)
+        with c_novo:
+            secao("Novo usuário")
+            with st.form("form_novo_usuario", clear_on_submit=True):
+                novo_nome = st.text_input("Nome de usuário", placeholder="ex.: maria.silva")
+                novo_perfil = st.selectbox("Perfil", motor_seguranca.PERFIS)
+                nova_senha = st.text_input("Senha inicial", type="password",
+                                           help="Mínimo de 8 caracteres, com letras e números. "
+                                                "A pessoa troca no primeiro acesso.")
+                criar = st.form_submit_button("Criar usuário", **FULL_FORM_BTN)
+            if criar:
+                ok, msg = motor_seguranca.criar_usuario(novo_nome, nova_senha, novo_perfil)
+                if ok:
+                    registrar_log("Usuário criado", f"{novo_nome} | {novo_perfil}")
+                    avisar("success", msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        with c_edit:
+            secao("Editar usuário")
+            nomes = df_us["Usuário"].tolist()
+            if nomes:
+                alvo = st.selectbox("Usuário", nomes, key="sel_usuario")
+                linha = df_us[df_us["Usuário"] == alvo].iloc[0]
+                perfil = st.selectbox("Perfil", motor_seguranca.PERFIS,
+                                      index=motor_seguranca.PERFIS.index(linha["Perfil"])
+                                      if linha["Perfil"] in motor_seguranca.PERFIS else 0,
+                                      key=f"perfil_{alvo}")
+                ativo = st.checkbox("Ativo", value=linha["Situação"] == "Ativo", key=f"ativo_{alvo}")
+                b1, b2 = st.columns(2)
+                if b1.button("Salvar", type="primary", key="salvar_usuario", **FULL_BTN):
+                    if alvo == st.session_state.usuario_atual and not ativo:
+                        st.error("Você não pode desativar o seu próprio usuário.")
+                    else:
+                        ok, msg = motor_seguranca.atualizar_usuario(alvo, perfil, ativo,
+                                                                    st.session_state.usuario_atual)
+                        if ok:
+                            registrar_log("Usuário alterado", f"{alvo} | {perfil} | ativo={int(ativo)}")
+                            avisar("success", msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                if b2.button("Gerar senha temporária", key="reset_usuario", **FULL_BTN):
+                    ok, msg, temp = motor_seguranca.redefinir_senha(alvo, st.session_state.usuario_atual)
+                    if ok:
+                        registrar_log("Senha redefinida", alvo)
+                        st.success(f"{msg} Passe para {alvo} com segurança: **{temp}** "
+                                   "(ela será pedida para trocar no próximo acesso).")
+                    else:
+                        st.error(msg)
     with aba_ac:
         if hasattr(motor_seguranca, "obter_relatorio_acessos"):
             try:

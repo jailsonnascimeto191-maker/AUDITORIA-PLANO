@@ -1,0 +1,11 @@
+# Bancos de dados locais (contêm dados de pacientes e senhas) — nunca enviar ao GitHub
+*.db
+*.sqlite
+*.sqlite3
+# Senhas e chaves do Streamlit
+.streamlit/secrets.toml
+# Arquivos temporários
+__pycache__/
+*.pyc
+.venv/
+venv/
