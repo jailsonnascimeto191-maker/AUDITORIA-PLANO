@@ -4,12 +4,16 @@ Histórico dos demonstrativos processados na Casa das Máquinas.
 Cada arquivo processado é guardado no banco (todas as linhas, com e sem glosa). Isso alimenta o
 Painel (gráficos por mês, operadora e motivo) e a pesquisa da Lupa de Glosas.
 Se o mesmo arquivo (mesmo conteúdo) for processado de novo, a versão anterior é substituída.
+Atendimentos que já estão no histórico vindos de OUTRO arquivo (mesma guia, código, data, paciente e
+data de crédito) não são gravados de novo, para não contar em dobro.
 """
 import hashlib
+import re
 
 import pandas as pd
 
 import banco
+import motor_extracao as me
 
 DB = "valores_clinica.db"  # mesmo banco das tabelas de valores (no PostgreSQL, tudo fica junto)
 
@@ -30,8 +34,15 @@ COLUNAS = {
     "Lote": "lote",
     "Status da glosa": "status",
     "Data de pagamento": "data_pagamento",
+    "Quantidade liberada": "quantidade_liberada",
+    "Código da glosa": "codigo_glosa",
+    "Valor de referência": "valor_referencia",
+    "Fonte do valor informado": "fonte_valor",
+    "Diferença sem justificativa": "diferenca",
+    "Alertas": "alertas",
 }
-NUMERICAS = {"valor_informado", "valor_pago", "valor_glosa", "quantidade", "valor_unitario"}
+NUMERICAS = {"valor_informado", "valor_pago", "valor_glosa", "quantidade", "valor_unitario",
+             "quantidade_liberada", "valor_referencia", "diferenca"}
 
 
 def _conectar():
@@ -62,7 +73,13 @@ def init_historico():
                 data_evento_iso TEXT,
                 {cols})"""
         )
+        # bancos criados por versões anteriores: acrescenta as colunas novas
+        existentes = banco.colunas(conn, "demonstrativo_itens")
+        for c in list(COLUNAS.values()) + ["chave"]:
+            if c not in existentes:
+                conn.execute(f"ALTER TABLE demonstrativo_itens ADD COLUMN {c} {'REAL' if c in NUMERICAS else 'TEXT'}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_demo ON demonstrativo_itens (demonstrativo_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_chave ON demonstrativo_itens (chave)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_data ON demonstrativo_itens (data_evento_iso)")
         conn.commit()
 
@@ -72,48 +89,69 @@ def hash_arquivo(dados):
 
 
 def _iso(data_br):
-    dt = pd.to_datetime(data_br, format="%d/%m/%Y", errors="coerce")
-    return dt.strftime("%Y-%m-%d") if pd.notna(dt) else None
+    m = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", str(data_br or "").strip())
+    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
+
+
+def chave_atendimento(reg):
+    """Identifica um pagamento de um atendimento (para não gravar o mesmo duas vezes)."""
+    partes = [str(reg.get(c) or "").strip().upper() for c in
+              ("Doc Original", "Código", "Data do evento", "Nome do paciente", "Data de pagamento")]
+    if not partes[0] or partes[0] == "-" or not partes[1] or partes[1] == "-":
+        return None
+    return hashlib.sha1("|".join(partes).encode()).hexdigest()[:20]
 
 
 def salvar_demonstrativo(df, arquivo, hash_, usuario, operadora):
-    """Guarda o demonstrativo (todas as linhas). Retorna (id, substituiu_anterior)."""
+    """Guarda o demonstrativo (todas as linhas). Retorna (id, substituiu_anterior, ignorados), onde
+    'ignorados' é o número de atendimentos que já estavam no histórico por outro arquivo."""
     if df is None or df.empty:
-        return None, False
+        return None, False, 0
     with _conectar() as conn:
         antigos = [r[0] for r in conn.execute("SELECT id FROM demonstrativos WHERE hash = ?", (hash_,)).fetchall()]
         for i in antigos:
             conn.execute("DELETE FROM demonstrativo_itens WHERE demonstrativo_id = ?", (i,))
             conn.execute("DELETE FROM demonstrativos WHERE id = ?", (i,))
+        registros = [dict(zip(df.columns, r)) for r in df.itertuples(index=False)]
+        chaves = [chave_atendimento(r) for r in registros]
+        existentes = set()
+        lista = [c for c in set(chaves) if c]
+        for i in range(0, len(lista), 500):
+            parte = lista[i:i + 500]
+            existentes.update(r[0] for r in conn.execute(
+                f"SELECT chave FROM demonstrativo_itens WHERE chave IN ({', '.join(['?'] * len(parte))})",
+                parte).fetchall())
+        novos = [(r, c) for r, c in zip(registros, chaves) if not c or c not in existentes]
+        ignorados = len(registros) - len(novos)
+        num = lambda col: round(float(pd.to_numeric(pd.Series([r.get(col) for r, _ in novos]), errors="coerce").sum()), 2)
         did = banco.inserir(
             conn,
             "INSERT INTO demonstrativos (data_hora, usuario, arquivo, hash, operadora, linhas, "
             "valor_informado, valor_pago, valor_glosa) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (banco.agora_txt(), usuario, arquivo, hash_, operadora, len(df),
-             round(float(df["Valor informado"].sum()), 2), round(float(df["Valor pago"].sum()), 2),
-             round(float(df["Valor da glosa"].sum()), 2)),
+            (banco.agora_txt(), usuario, arquivo, hash_, operadora, len(novos),
+             num("Valor informado"), num("Valor pago"), num("Valor da glosa")),
         )
         nomes = list(COLUNAS.values())
-        sql = (f"INSERT INTO demonstrativo_itens (demonstrativo_id, operadora, data_evento_iso, {', '.join(nomes)}) "
-               f"VALUES ({', '.join(['?'] * (len(nomes) + 3))})")
+        sql = (f"INSERT INTO demonstrativo_itens (demonstrativo_id, operadora, data_evento_iso, chave, "
+               f"{', '.join(nomes)}) VALUES ({', '.join(['?'] * (len(nomes) + 4))})")
         linhas = []
-        for r in df.itertuples(index=False):
-            reg = dict(zip(df.columns, r))
+        for reg, chave in novos:
             valores = []
             for col_df, col_db in COLUNAS.items():
                 v = reg.get(col_df)
                 if col_db in NUMERICAS:
                     try:
                         v = float(v)
+                        v = None if pd.isna(v) else v
                     except (TypeError, ValueError):
-                        v = 0.0
+                        v = None
                 else:
                     v = "" if v is None or (not isinstance(v, str) and pd.isna(v)) else str(v)
                 valores.append(v)
-            linhas.append((did, operadora, _iso(reg.get("Data do evento")), *valores))
+            linhas.append((did, operadora, _iso(reg.get("Data do evento")), chave, *valores))
         conn.executemany(sql, linhas)
         conn.commit()
-    return did, bool(antigos)
+    return did, bool(antigos), ignorados
 
 
 def listar_demonstrativos():
@@ -162,15 +200,18 @@ def carregar_itens(desde_iso=None, operadoras_sel=None, somente_glosas=False):
             f"ORDER BY i.data_evento_iso DESC, i.id",
             params,
         )
-    for c in ("Valor informado", "Valor pago", "Valor da glosa", "Quantidade", "Valor unitário"):
+    for c in ("Valor informado", "Valor pago", "Valor da glosa", "Diferença sem justificativa"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    for c in ("Quantidade", "Quantidade liberada", "Valor unitário", "Valor de referência"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
 
 def resumo_painel(itens):
     """Agregações para o Painel. 'itens' vem de carregar_itens()."""
-    vazio = dict(apresentado=0.0, glosado=0.0, itens_glosados=0, pct=0.0,
+    vazio = dict(apresentado=0.0, glosado=0.0, itens_glosados=0, pct=0.0, diferencas=0.0, itens_diferenca=0,
                  por_mes=pd.DataFrame(columns=["Mês", "Valor glosado"]),
                  por_operadora=pd.DataFrame(columns=["Operadora", "Valor glosado"]),
                  motivos=pd.DataFrame(columns=["Motivo da glosa", "Itens", "Valor glosado", "% do glosado"]))
@@ -179,8 +220,10 @@ def resumo_painel(itens):
     g = itens[itens["Valor da glosa"] > 0.005].copy()
     apresentado = float(itens["Valor informado"].sum())
     glosado = float(g["Valor da glosa"].sum())
+    dif = pd.to_numeric(itens.get("Diferença sem justificativa", pd.Series(dtype=float)), errors="coerce").fillna(0)
     res = dict(apresentado=apresentado, glosado=glosado, itens_glosados=int(len(g)),
-               pct=(glosado / apresentado) if apresentado else 0.0)
+               pct=(glosado / apresentado) if apresentado else 0.0,
+               diferencas=float(dif.sum()), itens_diferenca=int((dif > 0.005).sum()))
     if g.empty:
         return {**vazio, **res}
     g["Mês"] = g["_iso"].fillna("").str[:7].replace("", "Sem data")
@@ -189,7 +232,7 @@ def resumo_painel(itens):
     pm["Mês"] = pm["Mês"].map(lambda m: f"{m[5:7]}/{m[:4]}" if m != "Sem data" else m)
     po = (g.groupby("Operadora")["Valor da glosa"].sum().reset_index()
           .rename(columns={"Valor da glosa": "Valor glosado"}).sort_values("Valor glosado", ascending=False))
-    g["Motivo da glosa"] = g["Motivo da glosa"].fillna("").replace("", "Sem motivo informado")
+    g["Motivo da glosa"] = me.agrupar_motivos(g["Motivo da glosa"]).replace("", "Sem motivo informado")
     mo = (g.groupby("Motivo da glosa").agg(Itens=("Valor da glosa", "count"),
                                             **{"Valor glosado": ("Valor da glosa", "sum")})
           .reset_index().sort_values("Valor glosado", ascending=False).head(10))

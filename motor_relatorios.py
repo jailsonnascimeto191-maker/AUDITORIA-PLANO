@@ -26,6 +26,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.properties import PageSetupProperties
 
 import motor_cruzamento as mc
+import motor_extracao as me
 
 # Paleta (mesma do app)
 NAVY, TEAL, TEAL_CLARO, CINZA, LINHA = "0F2A43", "0E7C86", "E3F1F2", "F3F5F8", "D5DBE3"
@@ -520,8 +521,9 @@ def spec_glosas(df_glosas, df_completo=None, arquivos=None):
     ren = {"Data do evento": "Data do atendimento", "Nome do paciente": "Paciente",
            "Doc Original": "Guia do prestador"}
     g = g.rename(columns=ren)
-    cols = ["Data do atendimento", "Paciente", "Guia do prestador", "Lote", "Protocolo", "Código",
-            "Procedimento", "Valor informado", "Valor pago", "Valor da glosa", "Motivo da glosa", "Operadora"]
+    cols = ["Data do atendimento", "Paciente", "Guia do prestador", "Protocolo", "Lote", "Código",
+            "Procedimento", "Quantidade", "Quantidade liberada", "Valor informado", "Valor pago",
+            "Valor da glosa", "Status da glosa", "Motivo da glosa", "Data de pagamento", "Operadora"]
     cols = [c for c in cols if c in g.columns]
     g = g[cols].sort_values(["Operadora", "Data do atendimento"] if "Operadora" in cols else cols[:1]) \
         .reset_index(drop=True)
@@ -536,7 +538,10 @@ def spec_glosas(df_glosas, df_completo=None, arquivos=None):
     def agrupa(col, titulo):
         if col not in g.columns or g.empty:
             return dict(titulo=titulo, df=pd.DataFrame())
-        t = g.groupby(col, sort=False).agg(Itens=("Valor da glosa", "count"),
+        base = g
+        if col == "Motivo da glosa":  # variações do mesmo motivo/código ficam juntas
+            base = g.assign(**{col: me.agrupar_motivos(g[col]).replace("", "Sem motivo informado")})
+        t = base.groupby(col, sort=False).agg(Itens=("Valor da glosa", "count"),
                                            **{"Valor da glosa": ("Valor da glosa", "sum")}).reset_index()
         t = t.sort_values("Valor da glosa", ascending=False)
         t["% do total glosado"] = (t["Valor da glosa"] / total_glosa) if total_glosa else 0.0
@@ -549,15 +554,19 @@ def spec_glosas(df_glosas, df_completo=None, arquivos=None):
     kpis = [("Itens glosados", len(g), "int"), ("Guias com glosa", guias, "int"),
             ("Valor glosado", total_glosa, "moeda"), ("Valor apresentado (demonstrativo)", apresentado, "moeda"),
             ("% glosado sobre o apresentado", (total_glosa / apresentado) if apresentado else 0.0, "pct")]
+    # Lote só aparece no PDF quando o demonstrativo informa; o protocolo aparece sempre
+    tem_lote = "Lote" in g.columns and g["Lote"].astype(str).str.strip().replace({"-": "", "nan": ""}).ne("").any()
+    pdf_cols = ["Data do atendimento", "Paciente", "Guia do prestador", "Protocolo"] + (["Lote"] if tem_lote else []) \
+        + ["Procedimento", "Valor informado", "Valor pago", "Valor da glosa", "Motivo da glosa"]
     detalhe = dict(nome="Glosas", titulo="Relação de glosas", df=g, moeda=["Valor informado", "Valor pago", "Valor da glosa"],
-                   datas=["Data do atendimento"], total=["Valor informado", "Valor pago", "Valor da glosa"],
-                   pdf_colunas=["Data do atendimento", "Paciente", "Guia do prestador", "Lote", "Procedimento",
-                                "Valor informado", "Valor pago", "Valor da glosa", "Motivo da glosa"])
+                   inteiros=["Quantidade", "Quantidade liberada"],
+                   datas=["Data do atendimento", "Data de pagamento"], total=["Valor informado", "Valor pago", "Valor da glosa"],
+                   status="Status da glosa", pdf_colunas=pdf_cols)
     return dict(
         titulo="Relatório de Glosas", subtitulo="Itens glosados pelas operadoras, por guia e lote",
         info=info, kpis=kpis,
         resumos=[agrupa("Motivo da glosa", "Glosas por motivo"), agrupa("Operadora", "Glosas por operadora/plano"),
-                 agrupa("Lote", "Glosas por lote")],
+                 agrupa("Lote" if tem_lote else "Protocolo", "Glosas por lote" if tem_lote else "Glosas por protocolo")],
         detalhes=[detalhe])
 
 

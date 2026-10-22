@@ -290,6 +290,9 @@ def consolidar_demonstrativos(itens):
         if d is None or d.empty:
             continue
         x = d.copy()
+        # quantidade desconhecida ou zero (ex.: consultas no extrato do Bradesco) conta como 1
+        q = pd.to_numeric(x["Quantidade"], errors="coerce") if "Quantidade" in x.columns else pd.Series(1.0, index=x.index)
+        x["Quantidade"] = q.where(q > 0, 1.0).fillna(1.0)
         x["Arquivo"] = nome
         x["Operadora"] = d.attrs.get("operadora", "")
         partes.append(x)

@@ -21,6 +21,7 @@ st.set_page_config(
 import banco  # noqa: E402
 import motor_seguranca  # noqa: E402
 import motor_extracao  # noqa: E402
+import motor_conhecimento  # noqa: E402
 import motor_historico  # noqa: E402
 import paginas_relatorios  # noqa: E402
 
@@ -146,6 +147,9 @@ def init_db():
                 acao TEXT,
                 detalhe TEXT)"""
         )
+        for tb in ("tabela_valores_faturamento", "tabela_valores_repasse"):
+            if "codigo_tuss" not in banco.colunas(conn, tb):
+                conn.execute(f"ALTER TABLE {tb} ADD COLUMN codigo_tuss TEXT")
         conn.commit()
 
         # Migração única: se as tabelas novas estão vazias, copia da tabela antiga.
@@ -250,21 +254,22 @@ def excluir_profissional(pid, nome):
 def valores_df(tipo, esp):
     cfg = TIPOS[tipo]
     return consultar(
-        f"SELECT id, plano, tempo_atendimento, {cfg['col']} FROM {cfg['tabela']} "
+        f"SELECT id, plano, codigo_tuss, tempo_atendimento, {cfg['col']} FROM {cfg['tabela']} "
         "WHERE UPPER(especialidade) = UPPER(?) ORDER BY plano, tempo_atendimento",
         (esp,),
     )
 
 
-def inserir_valor(tipo, esp, plano, tempo, valor):
+def inserir_valor(tipo, esp, plano, tempo, valor, codigo=""):
     cfg = TIPOS[tipo]
     plano = plano.strip()
     if not plano:
         return False, "Informe o plano de saúde."
     with conectar() as conn:
         conn.execute(
-            f"INSERT INTO {cfg['tabela']} (especialidade, plano, tempo_atendimento, {cfg['col']}) VALUES (?,?,?,?)",
-            (esp, plano, tempo.strip(), float(valor)),
+            f"INSERT INTO {cfg['tabela']} (especialidade, plano, tempo_atendimento, {cfg['col']}, codigo_tuss) "
+            "VALUES (?,?,?,?,?)",
+            (esp, plano, tempo.strip(), float(valor), (codigo or "").strip() or None),
         )
         conn.commit()
     registrar_log(f"Valor cadastrado ({tipo})", f"{esp} | {plano} | {tempo.strip()} | R$ {valor:.2f}")
@@ -277,6 +282,8 @@ def salvar_edicao(tipo, esp, original, editado):
     ed = editado.copy()
     ed["plano"] = ed["plano"].map(_limpa_plano)
     ed["tempo_atendimento"] = ed["tempo_atendimento"].fillna("").astype(str).str.strip()
+    ed["codigo_tuss"] = (ed["codigo_tuss"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+                         if "codigo_tuss" in ed.columns else "")
     ed[col] = pd.to_numeric(ed[col], errors="coerce")
 
     invalidas = ed[ed["plano"].isna() | ed[col].isna()]
@@ -290,12 +297,14 @@ def salvar_edicao(tipo, esp, original, editado):
     with conectar() as conn:
         conn.executemany(f"DELETE FROM {tb} WHERE id=?", [(i,) for i in removidos])
         conn.executemany(
-            f"UPDATE {tb} SET plano=?, tempo_atendimento=?, {col}=? WHERE id=?",
-            [(r["plano"], r["tempo_atendimento"], float(r[col]), int(r["id"])) for _, r in mantidos.iterrows()],
+            f"UPDATE {tb} SET plano=?, tempo_atendimento=?, {col}=?, codigo_tuss=? WHERE id=?",
+            [(r["plano"], r["tempo_atendimento"], float(r[col]), r["codigo_tuss"] or None, int(r["id"]))
+             for _, r in mantidos.iterrows()],
         )
         conn.executemany(
-            f"INSERT INTO {tb} (especialidade, plano, tempo_atendimento, {col}) VALUES (?,?,?,?)",
-            [(esp, r["plano"], r["tempo_atendimento"], float(r[col])) for _, r in novos.iterrows()],
+            f"INSERT INTO {tb} (especialidade, plano, tempo_atendimento, {col}, codigo_tuss) VALUES (?,?,?,?,?)",
+            [(esp, r["plano"], r["tempo_atendimento"], float(r[col]), r["codigo_tuss"] or None)
+             for _, r in novos.iterrows()],
         )
         conn.commit()
     registrar_log(
@@ -431,6 +440,7 @@ def _inicializar_bancos(chave_banco):
     try:
         init_db()
         motor_historico.init_historico()
+        motor_conhecimento.init_conhecimento()
         motor_seguranca.init_db_seguranca()
     except Exception as e:
         return str(e)
@@ -676,6 +686,10 @@ def secao_valores(tipo):
                     column_config={
                         "id": None,
                         "plano": st.column_config.TextColumn("Plano de saúde", required=True),
+                        "codigo_tuss": st.column_config.TextColumn(
+                            "Código TUSS (opcional)",
+                            help="Ligue o valor ao código do procedimento no demonstrativo. Sem código, o "
+                                 "sistema usa a especialidade (quando houver um único valor para o plano)."),
                         "tempo_atendimento": st.column_config.TextColumn("Tempo de atendimento"),
                         col: st.column_config.NumberColumn(
                             cfg["rotulo_valor"], format="R$ %.2f", min_value=0.0, required=True
@@ -702,15 +716,16 @@ def secao_valores(tipo):
             f1, f2 = st.columns(2)
             esp_sel = f1.selectbox("Especialidade", especs, format_func=str.title)
             plano = f2.text_input("Plano de saúde", placeholder="Ex.: Unimed Recife")
-            f3, f4 = st.columns(2)
+            f3, f4, f5 = st.columns(3)
             tempo = f3.text_input("Tempo de atendimento", placeholder="Ex.: 50 min")
-            valor = f4.number_input(cfg["rotulo_valor"] + " (R$)", min_value=0.0, step=1.0, format="%.2f")
+            codigo = f4.text_input("Código TUSS (opcional)", placeholder="Ex.: 50000470")
+            valor = f5.number_input(cfg["rotulo_valor"] + " (R$)", min_value=0.0, step=1.0, format="%.2f")
             enviar = st.form_submit_button("Cadastrar valor", **FULL_FORM_BTN)
         if enviar:
             if valor <= 0:
                 st.error("Informe um valor maior que zero.")
             else:
-                ok, msg = inserir_valor(tipo, esp_sel, plano, tempo, valor)
+                ok, msg = inserir_valor(tipo, esp_sel, plano, tempo, valor, codigo)
                 if ok:
                     avisar("success", f"{msg} ({esp_sel.title()} · {plano.strip()} · {brl(valor)})")
                     st.rerun()
@@ -983,6 +998,10 @@ if menu == "Painel":
         c[1].metric("Valor glosado", brl(r["glosado"]))
         c[2].metric("% glosado", f"{r['pct'] * 100:.1f}%".replace(".", ","))
         c[3].metric("Itens glosados", f"{r['itens_glosados']:,}".replace(",", "."))
+        if r.get("itens_diferenca"):
+            st.caption(f"Fora das glosas: {r['itens_diferenca']} atendimento(s) pagos abaixo do valor de referência "
+                       f"sem justificativa do plano, somando {brl(r['diferencas'])}. Pesquise na **Lupa de Glosas** "
+                       "desmarcando \"Só itens com glosa\".")
 
         if r["itens_glosados"] == 0:
             st.success("Nenhuma glosa no período e nas operadoras escolhidas.")
@@ -1020,53 +1039,128 @@ if menu == "Painel":
 
 elif menu == "Casa das Máquinas":
     cabecalho("Casa das Máquinas",
-              "Envie o demonstrativo do convênio: o sistema extrai os itens, aponta as glosas e guarda no histórico.")
+              "Envie o demonstrativo do convênio: o sistema entende a estrutura do arquivo, aponta as glosas "
+              "e guarda no histórico.")
     c1, c2 = st.columns([2, 1])
     plano = c1.selectbox("Operadora / plano de saúde", PLANOS_SAUDE)
-    c2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-    somente_glosas = c2.checkbox("Exibir apenas itens com glosa", value=True)
+    exibir = c2.selectbox("Exibir", ["Itens com glosa", "Diferenças a conferir", "Todos os itens"])
 
     arquivo = st.file_uploader(
         "Demonstrativo do convênio", type=paginas_relatorios.TIPOS_DEMONSTRATIVO
     )
+
+    def _processar(nome_arq, dados, plano_sel, reprocessando=False):
+        class _Arq(io.BytesIO):
+            name = nome_arq
+        with st.spinner("Lendo a estrutura do arquivo e auditando os atendimentos..."):
+            try:
+                df_res, erro = motor_conhecimento.extrair(_Arq(dados), plano=plano_sel, somente_glosas=False)
+            except Exception as e:
+                df_res, erro = pd.DataFrame(), f"{type(e).__name__}: {e}"
+        if df_res is None or df_res.empty:
+            st.error(f"Problema na extração: {erro or 'nenhum registro encontrado.'}")
+            return
+        operadora = df_res.attrs.get("operadora") or plano_sel
+        if operadora == "INDEFINIDO" and plano_sel != motor_extracao.PLANO_AUTOMATICO:
+            operadora = plano_sel
+        df_res["Operadora"] = operadora
+        try:
+            _, substituiu, ignorados = motor_historico.salvar_demonstrativo(
+                df_res, nome_arq, motor_historico.hash_arquivo(dados), str(st.session_state.usuario_atual), operadora)
+            aviso = " A versão anterior deste arquivo foi substituída no histórico." if substituiu else " Guardado no histórico."
+            if ignorados:
+                aviso += (f" {ignorados} atendimento(s) já estavam no histórico por outro arquivo e não foram "
+                          "contados de novo.")
+        except Exception as e:
+            aviso = f" Não foi possível guardar no histórico: {e}"
+        registrar_log("Demonstrativo reprocessado" if reprocessando else "Demonstrativo processado",
+                      f"{nome_arq} | {operadora} | {len(df_res)} atendimentos")
+        st.session_state["ultimo_processamento"] = df_res
+        st.session_state["ultimo_arquivo"] = nome_arq
+        st.session_state["ultimo_arquivo_dados"] = (nome_arq, dados, plano_sel)
+        st.session_state["ultima_leitura"] = dict(leituras=df_res.attrs.get("leituras", []),
+                                                  resumo=df_res.attrs.get("resumo", {}), operadora=operadora)
+        avisar("success", f"Processamento concluído: {len(df_res)} atendimentos.{aviso}")
+        st.rerun()
+
     if st.button("Processar e auditar", type="primary", **FULL_BTN):
         if arquivo is None:
             st.warning("Selecione um arquivo antes de processar.")
         else:
-            with st.spinner("Lendo e auditando o demonstrativo..."):
-                try:
-                    df_res, erro = motor_extracao.extrair_glosas_de_arquivo(arquivo, plano=plano,
-                                                                            somente_glosas=False)
-                except Exception as e:
-                    df_res, erro = pd.DataFrame(), f"{type(e).__name__}: {e}"
-            if df_res is None or df_res.empty:
-                st.error(f"Problema na extração: {erro or 'nenhum registro encontrado.'}")
-            else:
-                operadora = df_res.attrs.get("operadora") or plano
-                df_res["Operadora"] = operadora
-                try:
-                    _, substituiu = motor_historico.salvar_demonstrativo(
-                        df_res, arquivo.name, motor_historico.hash_arquivo(arquivo.getvalue()),
-                        str(st.session_state.usuario_atual), operadora)
-                    aviso_hist = (" Este arquivo já estava no histórico; a versão anterior foi substituída."
-                                  if substituiu else " Guardado no histórico.")
-                except Exception as e:
-                    aviso_hist = f" Não foi possível guardar no histórico: {e}"
-                registrar_log("Demonstrativo processado", f"{arquivo.name} | {operadora} | {len(df_res)} linhas")
-                st.session_state["ultimo_processamento"] = df_res
-                st.session_state["ultimo_arquivo"] = arquivo.name
-                avisar("success", f"Processamento concluído: {len(df_res)} registros lidos.{aviso_hist}")
-                st.rerun()
+            _processar(arquivo.name, arquivo.getvalue(), plano)
 
     if not df_proc.empty:
         secao(f"Resultado: {st.session_state.get('ultimo_arquivo', 'último demonstrativo')}")
         kpis_do_processamento(df_proc)
+        dif_total = float(pd.to_numeric(df_proc.get("Diferença sem justificativa", pd.Series(dtype=float)),
+                                        errors="coerce").fillna(0).sum())
+        n_dif = int((pd.to_numeric(df_proc.get("Diferença sem justificativa", pd.Series(dtype=float)),
+                                   errors="coerce").fillna(0) > 0.005).sum())
+        if n_dif:
+            st.caption(f"Além das glosas, {n_dif} atendimento(s) foram pagos abaixo do valor de referência sem "
+                       f"justificativa do plano (total {brl(dif_total)}). Veja em **Exibir → Diferenças a conferir**.")
+
+        leitura = st.session_state.get("ultima_leitura") or {}
+        res = leitura.get("resumo") or {}
+        with st.expander("Conferência da leitura (como o sistema entendeu o arquivo)"):
+            m = st.columns(4)
+            m[0].metric("Linhas lidas", f"{res.get('linhas_lidas', 0):,}".replace(",", "."))
+            m[1].metric("Cópias ignoradas", f"{res.get('copias_removidas', 0):,}".replace(",", "."),
+                        help="O mesmo pagamento repetido em outra aba/tabela do arquivo conta uma vez só.")
+            m[2].metric("Linhas agrupadas", f"{res.get('linhas_agrupadas', 0):,}".replace(",", "."),
+                        help="Várias sessões da mesma guia ou o mesmo atendimento pago em mais de um crédito.")
+            m[3].metric("Atendimentos", f"{res.get('atendimentos', 0):,}".replace(",", "."))
+            fontes = df_proc["Fonte do valor informado"].value_counts() if "Fonte do valor informado" in df_proc else pd.Series(dtype=int)
+            if len(fontes):
+                st.caption("Origem do valor apresentado: " + " · ".join(f"{k}: {v}" for k, v in fontes.items()))
+            if fontes.get(motor_extracao.FONTE_APRENDIDO, 0):
+                st.info("Este arquivo não traz o valor apresentado. Para os procedimentos sem valor cadastrado, o "
+                        "sistema usou o valor que o plano costuma pagar. Cadastre em **Valores** (com o código "
+                        "TUSS) para que a glosa seja calculada pelo valor da clínica.")
+
+            # um editor por layout de tabela (abas iguais compartilham o mesmo layout)
+            layouts = {}
+            for lt in leitura.get("leituras", []):
+                if lt.get("assinatura") and lt["assinatura"] not in layouts:
+                    layouts[lt["assinatura"]] = lt
+            for n_lay, (assin, lt) in enumerate(layouts.items()):
+                st.markdown(f"**Layout {n_lay + 1}** — exemplo: {html.escape(str(lt.get('tabela', '')))} · "
+                            f"leitura: {lt.get('origem_mapa', 'automático')}")
+                for obs in lt.get("observacoes", []):
+                    st.caption(obs)
+                opcoes = [""] + list(lt.get("colunas", []))
+                tab = motor_conhecimento.mapa_para_tabela(lt)
+                ed = st.data_editor(
+                    tab, key=f"mapa_{assin}", hide_index=True, disabled=["Campo do sistema"],
+                    column_config={"Coluna do arquivo": st.column_config.SelectboxColumn(
+                        "Coluna do arquivo", options=opcoes, help="Deixe vazio se o arquivo não tem esse dado.")},
+                    **FULL_ED,
+                )
+                if st.button("Salvar este padrão e reprocessar", key=f"salvar_mapa_{assin}",
+                             help="O sistema passa a ler todo arquivo com este mesmo layout desta forma."):
+                    novo = {r["Campo do sistema"]: r["Coluna do arquivo"] for _, r in ed.iterrows()
+                            if r["Coluna do arquivo"]}
+                    motor_conhecimento.salvar_perfil(assin, novo, lt.get("colunas", []), leitura.get("operadora"),
+                                                     str(st.session_state.usuario_atual))
+                    registrar_log("Padrão de leitura salvo", f"{leitura.get('operadora')} | {len(novo)} campos")
+                    dados_arq = st.session_state.get("ultimo_arquivo_dados")
+                    if dados_arq:
+                        _processar(*dados_arq, reprocessando=True)
+                    else:
+                        avisar("success", "Padrão salvo. Ele será usado nos próximos arquivos com este layout.")
+                        st.rerun()
+
         st.markdown("&nbsp;", unsafe_allow_html=True)
-        vis = df_proc[df_proc["Valor da glosa"] > 0.005] if somente_glosas else df_proc
-        if vis.empty:
-            st.success("Nenhum item com glosa neste demonstrativo.")
+        if exibir == "Itens com glosa":
+            vis = df_proc[df_proc["Valor da glosa"] > 0.005]
+        elif exibir == "Diferenças a conferir":
+            vis = df_proc[pd.to_numeric(df_proc.get("Diferença sem justificativa", 0), errors="coerce").fillna(0) > 0.005]
         else:
-            st.caption(f"{len(vis)} de {len(df_proc)} registros")
+            vis = df_proc
+        if vis.empty:
+            st.success("Nenhum item nesta visão.")
+        else:
+            st.caption(f"{len(vis)} de {len(df_proc)} atendimentos")
             tabela(vis)
             baixar(vis, "auditoria_glosas")
 
@@ -1201,7 +1295,8 @@ elif menu == "Acessos":
     else:
         st.warning(f"Banco de dados: {banco.descricao()}. No Streamlit Cloud, usuários, valores e profissionais "
                    "são apagados quando o app reinicia. Configure DATABASE_URL nos Secrets para guardar de vez.")
-    aba_us, aba_ac, aba_log = st.tabs(["Usuários", "Acessos", "Histórico de alterações"])
+    aba_us, aba_ac, aba_log, aba_apr = st.tabs(["Usuários", "Acessos", "Histórico de alterações",
+                                                "Aprendizado da leitura"])
     with aba_us:
         secao("Usuários cadastrados")
         df_us = motor_seguranca.listar_usuarios()
@@ -1275,3 +1370,29 @@ elif menu == "Acessos":
         else:
             tabela(df_log)
             baixar(df_log, "historico_alteracoes", key="dl_log")
+    with aba_apr:
+        st.caption("O que o sistema aprendeu lendo os demonstrativos. Isso é usado automaticamente nos próximos arquivos.")
+        apr = motor_conhecimento.resumo_aprendizado()
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Padrões de leitura salvos", apr["perfis"],
+                  help="Layouts de arquivo cujas colunas foram confirmadas na Casa das Máquinas.")
+        a2.metric("Valores de referência", apr["referencias"],
+                  help="Quanto cada operadora costuma pagar por código, por mês.")
+        a3.metric("Códigos de glosa conhecidos", apr["codigos"],
+                  help="Significado dos códigos de glosa (tabela TUSS 38) aprendido das justificativas.")
+        perfis = motor_conhecimento.listar_perfis()
+        if perfis.empty:
+            st.info("Nenhum padrão de leitura salvo ainda. Ao conferir a leitura de um arquivo na Casa das Máquinas, "
+                    "use **Salvar este padrão** para o sistema lembrar.")
+        else:
+            secao("Padrões de leitura salvos")
+            tabela(perfis.drop(columns=["assinatura", "mapeamento"]))
+            rot = {r["assinatura"]: f"{r['Operadora'] or 'sem operadora'} — salvo em {r['Salvo em']}"
+                   for _, r in perfis.iterrows()}
+            p1, p2 = st.columns([3, 1])
+            alvo_p = p1.selectbox("Apagar padrão", list(rot), format_func=rot.get, key="perfil_alvo")
+            if p2.button("Apagar", key="perfil_apagar", **FULL_BTN):
+                motor_conhecimento.excluir_perfil(alvo_p)
+                registrar_log("Padrão de leitura apagado", rot[alvo_p])
+                avisar("success", "Padrão apagado. Os próximos arquivos com esse layout serão lidos automaticamente.")
+                st.rerun()

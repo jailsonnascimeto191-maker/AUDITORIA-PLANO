@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 
 import motor_cruzamento as mc
+import motor_conhecimento
 import motor_extracao
 import motor_historico
 import motor_relatorios as mr
@@ -83,7 +84,7 @@ def _ler_demonstrativos(arquivos, plano, datas):
     """Lê TODAS as linhas (e abas) de cada demonstrativo. Retorna (consolidado, erros, resumo_por_arquivo)."""
     itens, erros, resumo = [], [], []
     for a in arquivos:
-        df, erro = motor_extracao.extrair_glosas_de_arquivo(
+        df, erro = motor_conhecimento.extrair(
             a, plano=plano, somente_glosas=False, data_pagamento_padrao=datas.get(a.name))
         if df.empty:
             erros.append(f"{a.name}: {erro or 'nada encontrado'}")
@@ -331,7 +332,7 @@ def render_glosas(H):
                ("% do apresentado", f"{(total / apres * 100) if apres else 0:.1f}%".replace(".", ","))])
     _downloads(H, cache, f"relatorio_glosas_{date.today():%Y-%m-%d}", "glo")
 
-    nomes_abas = ["Relação de glosas", "Por motivo", "Por operadora", "Por lote", "Arquivos lidos"]
+    nomes_abas = ["Relação de glosas", "Por motivo", "Por operadora", "Por lote / protocolo", "Arquivos lidos"]
     abas = st.tabs(nomes_abas)
     d = spec["detalhes"][0]
     with abas[0]:
