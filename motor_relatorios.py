@@ -308,7 +308,7 @@ def gerar_pdf(spec):
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
-    from reportlab.platypus import (KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table,
+    from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
                                     TableStyle)
 
     c_navy, c_teal = colors.HexColor("#" + NAVY), colors.HexColor("#" + TEAL)

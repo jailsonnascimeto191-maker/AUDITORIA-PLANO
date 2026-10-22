@@ -36,10 +36,6 @@ try:
 except ImportError:
     docx = None
 
-try:  # opcional: usado só para detectar a operadora pelo nome do arquivo
-    from motor_utilitarios import extrair_nome_operadora
-except ImportError:
-    extrair_nome_operadora = None
 
 # Colunas originais (compatibilidade com o restante do sistema)
 COLUNAS_PADRAO_GLOSAS = [
@@ -802,12 +798,34 @@ def _detectar_separador(texto):
     return melhor
 
 
+# Palavras do nome do arquivo -> operadora (mesmos nomes da lista PLANOS_SAUDE do app)
+_OPERADORAS_POR_NOME = [
+    (("UNIMED",), "Unimed Recife"),
+    (("BRADESCO", "BRAD"), "Bradesco Saúde"),
+    (("SULAMERICA", "SUL AMERICA", "SULAM"), "SulAmérica"),
+    (("AMIL",), "Amil"),
+    (("CASSI",), "Cassi"),
+    (("GEAP",), "GEAP"),
+    (("POSTAL", "CORREIOS"), "Postal Saúde"),
+    (("ASSEFAZ",), "Assefaz"),
+]
+
+
+def extrair_nome_operadora(nome_arquivo):
+    """Tenta descobrir a operadora pelo nome do arquivo (ex.: 'demonstrativo_unimed_09-2026.xlsx')."""
+    n = " " + _norm(nome_arquivo) + " "
+    compacto = n.replace(" ", "")
+    for chaves, operadora in _OPERADORAS_POR_NOME:
+        for c in chaves:
+            if (" " + c + " ") in n or (len(c) >= 5 and c.replace(" ", "") in compacto):
+                return operadora
+    return "INDEFINIDO"
+
+
 def _detectar_operadora(plano, nome_arquivo):
     if plano and plano != PLANO_AUTOMATICO:
         return plano
-    if extrair_nome_operadora is not None:
-        return extrair_nome_operadora(nome_arquivo)
-    return "INDEFINIDO"
+    return extrair_nome_operadora(nome_arquivo)
 
 
 # --------------------------------------------------------------------------

@@ -98,7 +98,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 nome TEXT UNIQUE)"""
         )
-        # Tabela legada: mantida sincronizada para não quebrar o motor_extracao.
+        # Tabela antiga (versões anteriores do sistema): só é lida uma vez, na migração abaixo.
         conn.execute(
             """CREATE TABLE IF NOT EXISTS tabela_valores_completa (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -163,22 +163,6 @@ def init_db():
                    WHERE valor_profissional IS NOT NULL AND valor_profissional > 0"""
             )
             conn.commit()
-
-
-def sincronizar_legado(conn):
-    """Reconstrói tabela_valores_completa (usada pelo motor de extração) a partir das duas novas."""
-    conn.execute("DELETE FROM tabela_valores_completa")
-    conn.execute(
-        """INSERT INTO tabela_valores_completa
-           (especialidade, plano, tempo_atendimento, valor_plano, valor_profissional)
-           SELECT f.especialidade, f.plano, f.tempo_atendimento, f.valor_plano,
-                  COALESCE(r.valor_profissional, 0)
-           FROM tabela_valores_faturamento f
-           LEFT JOIN tabela_valores_repasse r
-             ON r.especialidade = f.especialidade
-            AND r.plano = f.plano
-            AND COALESCE(r.tempo_atendimento, '') = COALESCE(f.tempo_atendimento, '')"""
-    )
 
 
 def registrar_log(acao, detalhe):
@@ -279,7 +263,6 @@ def inserir_valor(tipo, esp, plano, tempo, valor):
             f"INSERT INTO {cfg['tabela']} (especialidade, plano, tempo_atendimento, {cfg['col']}) VALUES (?,?,?,?)",
             (esp, plano, tempo.strip(), float(valor)),
         )
-        sincronizar_legado(conn)
         conn.commit()
     registrar_log(f"Valor cadastrado ({tipo})", f"{esp} | {plano} | {tempo.strip()} | R$ {valor:.2f}")
     return True, "Valor cadastrado."
@@ -311,7 +294,6 @@ def salvar_edicao(tipo, esp, original, editado):
             f"INSERT INTO {tb} (especialidade, plano, tempo_atendimento, {col}) VALUES (?,?,?,?)",
             [(esp, r["plano"], r["tempo_atendimento"], float(r[col])) for _, r in novos.iterrows()],
         )
-        sincronizar_legado(conn)
         conn.commit()
     registrar_log(
         f"Tabela editada ({tipo})",
@@ -408,7 +390,6 @@ def gravar_importacao(tipo, dados, modo_substituir):
             )
             conn.execute("INSERT OR IGNORE INTO tabela_especialidades (nome) VALUES (?)", (esp,))
             total += len(df)
-        sincronizar_legado(conn)
         conn.commit()
     modo = "substituição" if modo_substituir else "adição"
     registrar_log(f"Importação de planilha ({tipo})", f"{total} registros | {', '.join(sorted(dados))} | modo: {modo}")
@@ -439,13 +420,22 @@ def indicadores_cadastro():
     return ind
 
 
-init_db()
-
-try:
-    if hasattr(motor_seguranca, "init_db_seguranca"):
+@st.cache_resource(show_spinner=False)
+def _inicializar_bancos():
+    """Cria/migra os bancos uma única vez por servidor (antes rodava a cada clique,
+    recalculando o hash de senha de todos os usuários). Retorna a mensagem de erro, se houver."""
+    init_db()
+    try:
         motor_seguranca.init_db_seguranca()
-except Exception as e:
-    st.warning(f"Módulo de segurança não inicializou: {e}")
+    except Exception as e:
+        return f"Módulo de segurança não inicializou: {e}"
+    return None
+
+
+_erro_init = _inicializar_bancos()
+if _erro_init:
+    _inicializar_bancos.clear()  # tenta de novo na próxima interação
+    st.warning(_erro_init)
 
 # ─────────────────────────────────────────────────────────────
 # Tema / CSS
@@ -911,7 +901,7 @@ elif menu == "Casa das Máquinas":
     somente_glosas = c2.checkbox("Exibir apenas itens com glosa", value=True)
 
     arquivo = st.file_uploader(
-        "Demonstrativo do convênio", type=["xlsx", "xls", "csv", "pdf", "xml", "docx"]
+        "Demonstrativo do convênio", type=paginas_relatorios.TIPOS_DEMONSTRATIVO
     )
     if st.button("Processar e auditar", type="primary", **FULL_BTN):
         if arquivo is None:
@@ -966,7 +956,6 @@ elif menu == "Valores":
         "Tabelas de valores",
         "Faturamento (o que o plano paga à clínica) e repasse (o que o profissional recebe), uma tabela por especialidade.",
     )
-    mostrar_flash()
     aba_fat, aba_rep = st.tabs([TIPOS["faturamento"]["titulo"], TIPOS["repasse"]["titulo"]])
     with aba_fat:
         secao_valores("faturamento")
@@ -975,7 +964,6 @@ elif menu == "Valores":
 
 elif menu == "Cadastros":
     cabecalho("Cadastros", "Cadastro e gestão dos profissionais da clínica.")
-    mostrar_flash()
     kpis_cadastro()
     st.markdown("&nbsp;", unsafe_allow_html=True)
 
