@@ -15,6 +15,7 @@ import streamlit as st
 
 import motor_cruzamento as mc
 import motor_extracao
+import motor_historico
 import motor_relatorios as mr
 
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro",
@@ -127,6 +128,7 @@ def render_producao(H):
         return
 
     rotulos = {int(r.id): f"{r.nome} — {r.registro} ({r.especialidade.title()})" for r in profs.itertuples()}
+    H.secao("1. Profissional e mês")
     c1, c2, c3 = st.columns([3, 1.3, 1])
     pid = c1.selectbox("Profissional analisado", list(rotulos), format_func=rotulos.get, key="prod_prof")
     hoje = date.today()
@@ -135,11 +137,13 @@ def render_producao(H):
     ano = int(c3.number_input("Ano", min_value=2020, max_value=2100, value=hoje.year, step=1, key="prod_ano"))
     prof = profs[profs["id"] == pid].iloc[0]
 
+    H.secao("2. Arquivos")
     u1, u2 = st.columns(2)
     arq_ctrl = u1.file_uploader("Controle de atendimento (Excel ou CSV)", type=TIPOS_PLANILHA, key="prod_ctrl")
     arqs_demo = u2.file_uploader("Demonstrativo(s) de pagamento (opcional)", type=TIPOS_DEMONSTRATIVO,
                                  accept_multiple_files=True, key="prod_demo")
 
+    H.secao("3. Opções")
     planos = [p for p in H.PLANOS_SAUDE if p != "Identificar pelo arquivo"]
     o1, o2 = st.columns(2)
     plano_padrao = o1.selectbox("Plano padrão (se o controle não tiver coluna de plano)", planos, key="prod_plano_padrao")
@@ -240,9 +244,13 @@ def render_glosas(H):
         "Tudo o que foi glosado: data, paciente, guia do prestador, lote e motivo. Exporta para Excel e PDF.",
     )
     ultimo = st.session_state.get("ultimo_processamento", pd.DataFrame())
+    HIST = "Histórico (todos os demonstrativos já processados)"
     opcoes = ["Enviar demonstrativo(s)"]
+    if motor_historico.operadoras():
+        opcoes.insert(0, HIST)
     if ultimo is not None and not ultimo.empty:
         opcoes.insert(0, "Usar o último demonstrativo processado (Casa das Máquinas)")
+    H.secao("1. Origem dos dados")
     origem = st.radio("Origem dos dados", opcoes, key="glo_origem", horizontal=True)
 
     arqs, plano_op, datas = [], motor_extracao.PLANO_AUTOMATICO, {}
@@ -260,6 +268,9 @@ def render_glosas(H):
                     return
                 demo, erros, resumo_arqs = _ler_demonstrativos(arqs, plano_op, datas)
                 nomes = [a.name for a in arqs]
+            elif origem == HIST:
+                demo = motor_historico.carregar_itens().drop(columns=["_iso"], errors="ignore")
+                nomes = ["Histórico de demonstrativos"]
             else:
                 demo = ultimo.copy()
                 demo.attrs.update(ultimo.attrs)
@@ -340,11 +351,13 @@ def render_faturamento(H):
         "Faturamento x recebimento",
         "Confira se tudo o que foi faturado nos lotes foi pago, em que mês e com quantos dias de demora.",
     )
+    H.secao("1. Arquivos")
     u1, u2 = st.columns(2)
     arqs_fat = u1.file_uploader("Faturamento (lote com as guias)", type=TIPOS_PLANILHA,
                                 accept_multiple_files=True, key="fat_arqs")
     arqs_demo = u2.file_uploader("Demonstrativo(s) de pagamento", type=TIPOS_DEMONSTRATIVO,
                                  accept_multiple_files=True, key="fat_demo")
+    H.secao("2. Opções")
     planos = [p for p in H.PLANOS_SAUDE if p != "Identificar pelo arquivo"]
     o1, o2 = st.columns(2)
     plano_fat = o1.selectbox("Plano do faturamento (se o arquivo não tiver coluna de plano)", planos, key="fat_plano")

@@ -149,6 +149,10 @@ class _Cursor:
         return self._cur.rowcount
 
     @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
     def description(self):
         return self._cur.description
 
@@ -272,6 +276,13 @@ def conectar(arquivo_sqlite):
 # ─────────────────────────────────────────────────────────────
 # Utilidades
 # ─────────────────────────────────────────────────────────────
+def inserir(conn, sql, params=()):
+    """Executa um INSERT e devolve o id gerado (funciona nos dois bancos)."""
+    if conn.pg:
+        return conn.execute(sql.rstrip().rstrip(";") + " RETURNING id", params).fetchone()[0]
+    return conn.execute(sql, params).lastrowid
+
+
 def ler_df(conn, sql, params=()):
     """Executa um SELECT e devolve um DataFrame."""
     cur = conn.execute(sql, params)

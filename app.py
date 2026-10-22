@@ -1,6 +1,7 @@
 import html
 import io
 import inspect
+import os
 import time
 from types import SimpleNamespace
 
@@ -10,7 +11,9 @@ import streamlit as st
 # set_page_config PRECISA ser o primeiro comando do Streamlit no script.
 st.set_page_config(
     page_title="Espaço Saúde | Auditoria & Repasses",
-    page_icon="🏥",
+    page_icon=(os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icone.png")
+               if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icone.png"))
+               else "🏥"),
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -18,6 +21,7 @@ st.set_page_config(
 import banco  # noqa: E402
 import motor_seguranca  # noqa: E402
 import motor_extracao  # noqa: E402
+import motor_historico  # noqa: E402
 import paginas_relatorios  # noqa: E402
 
 
@@ -426,6 +430,7 @@ def _inicializar_bancos(chave_banco):
     Retorna a mensagem de erro, se houver."""
     try:
         init_db()
+        motor_historico.init_historico()
         motor_seguranca.init_db_seguranca()
     except Exception as e:
         return str(e)
@@ -441,6 +446,18 @@ if _erro_init:
 # ─────────────────────────────────────────────────────────────
 # Tema / CSS
 # ─────────────────────────────────────────────────────────────
+# Logotipo (desenhado em SVG: fica igual em qualquer computador ou celular, ao contrário de um emoji)
+LOGO_SVG = (
+    "<svg viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg' role='img' aria-label='Espaço Saúde'>"
+    "<rect width='40' height='40' rx='10' fill='#0E7C86'/>"
+    "<rect x='16.5' y='9' width='7' height='22' rx='2' fill='#FFFFFF'/>"
+    "<rect x='9' y='16.5' width='22' height='7' rx='2' fill='#FFFFFF'/>"
+    "<circle cx='30' cy='30' r='5.2' fill='#0F2A43'/>"
+    "<path d='M27.6 30.1l1.6 1.6 3.2-3.3' stroke='#4FD1C5' stroke-width='1.6' fill='none' "
+    "stroke-linecap='round' stroke-linejoin='round'/>"
+    "</svg>"
+)
+
 CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
@@ -467,24 +484,30 @@ header[data-testid="stHeader"] { background: transparent; }
 [data-testid="stSidebar"] { background: var(--navy); border-right: 0; }
 [data-testid="stSidebar"] * { color: #DCE6F0; }
 [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.12); }
-[data-testid="stSidebar"] [role="radiogroup"] { gap: 2px; }
-[data-testid="stSidebar"] [role="radiogroup"] label {
-  padding: 10px 14px; border-radius: 8px; width: 100%; cursor: pointer;
-  border-left: 3px solid transparent; transition: background .15s;
-}
-[data-testid="stSidebar"] [role="radiogroup"] label > div:first-child { display: none; }
-[data-testid="stSidebar"] [role="radiogroup"] label:hover { background: rgba(255,255,255,.07); }
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-  background: rgba(255,255,255,.12); border-left-color: #4FD1C5; font-weight: 600;
-}
 [data-testid="stSidebar"] .stButton button {
   background: transparent; border: 1px solid rgba(255,255,255,.25); color: #fff;
 }
 [data-testid="stSidebar"] .stButton button:hover { background: rgba(255,255,255,.1); border-color: #fff; }
 
+/* Menu lateral (botões agrupados por seção) */
+.nav-secao { font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  color: #7F96AD; margin: 14px 4px 4px; }
+[data-testid="stSidebar"] [class*="st-key-nav_"] { margin-bottom: -10px; }
+[data-testid="stSidebar"] [class*="st-key-nav_"] button {
+  justify-content: flex-start; text-align: left; background: transparent; border: 0;
+  border-left: 3px solid transparent; border-radius: 8px; padding: .45rem .8rem; color: #DCE6F0;
+  min-height: 0; font-weight: 400; box-shadow: none;
+}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button p { font-size: 14px; text-align: left; }
+[data-testid="stSidebar"] [class*="st-key-nav_"] button:hover { background: rgba(255,255,255,.07); color: #fff; }
+[data-testid="stSidebar"] [class*="st-key-nav_"] button[kind="primary"],
+[data-testid="stSidebar"] [class*="st-key-nav_"] button[kind="primary"]:hover {
+  background: rgba(255,255,255,.12); border-left-color: #4FD1C5; color: #fff; font-weight: 600;
+}
+
 .marca { display:flex; align-items:center; gap:10px; padding: 4px 4px 14px; }
-.marca .logo { width:36px; height:36px; border-radius:9px; background:var(--teal);
-  display:flex; align-items:center; justify-content:center; font-size:19px; }
+.marca .logo { width:36px; height:36px; flex: 0 0 36px; }
+.marca .logo svg, .login-marca .logo svg { width:100%; height:100%; display:block; }
 .marca .nome { font-weight:600; font-size:16px; line-height:1.1; color:#fff; }
 .marca .sub { font-size:11.5px; color:#9FB3C8; }
 .usuario { background: rgba(255,255,255,.07); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
@@ -527,8 +550,7 @@ header[data-testid="stHeader"] { background: transparent; }
 
 /* Login */
 .login-marca { text-align:center; margin: 6vh 0 18px; }
-.login-marca .logo { width:56px; height:56px; border-radius:14px; background:var(--navy);
-  display:inline-flex; align-items:center; justify-content:center; font-size:28px; margin-bottom:12px; }
+.login-marca .logo { width:56px; height:56px; display:inline-block; margin-bottom:12px; }
 .login-marca h1 { font-size:24px; font-weight:600; margin:0; color:var(--ink); }
 .login-marca p { color:var(--muted); font-size:14px; margin:6px 0 0; }
 </style>
@@ -551,7 +573,16 @@ def secao(titulo):
 
 
 def tabela(df, **kw):
-    st.dataframe(df, hide_index=True, **FULL_DF, **kw)
+    """Mostra um DataFrame; colunas de valor em dinheiro saem formatadas em R$ automaticamente."""
+    cfg = {}
+    for c in df.columns:
+        nome = str(c)
+        if nome.lower().startswith(("valor", "repasse")) and pd.api.types.is_numeric_dtype(df[c]):
+            cfg[nome] = st.column_config.NumberColumn(nome, format="R$ %.2f")
+        elif nome in ("Linhas", "Itens") and pd.api.types.is_numeric_dtype(df[c]):
+            cfg[nome] = st.column_config.NumberColumn(nome, format="%d")
+    cfg.update(kw.pop("column_config", None) or {})
+    st.dataframe(df, hide_index=True, column_config=cfg, **FULL_DF, **kw)
 
 
 def baixar(df, nome, rotulo="Baixar CSV", key=None):
@@ -769,7 +800,7 @@ if not st.session_state.autenticado:
     _, centro, _ = st.columns([1, 1.1, 1])
     with centro:
         st.markdown(
-            """<div class='login-marca'><div class='logo'>🏥</div>
+            f"""<div class='login-marca'><div class='logo'>{LOGO_SVG}</div>
             <h1>Espaço Saúde</h1>
             <p>Auditoria, faturamento e repasses</p></div>""",
             unsafe_allow_html=True,
@@ -809,7 +840,7 @@ if st.session_state.get("trocar_senha"):
     _, centro, _ = st.columns([1, 1.1, 1])
     with centro:
         st.markdown(
-            """<div class='login-marca'><div class='logo'>🔒</div>
+            f"""<div class='login-marca'><div class='logo'>{LOGO_SVG}</div>
             <h1>Crie uma nova senha</h1>
             <p>Por segurança, troque a senha antes de continuar.</p></div>""",
             unsafe_allow_html=True,
@@ -838,16 +869,38 @@ if st.session_state.get("trocar_senha"):
 # ─────────────────────────────────────────────────────────────
 # Navegação
 # ─────────────────────────────────────────────────────────────
-MENUS_BASE = ["Painel", "Casa das Máquinas", "Lupa de Glosas",
-              "Produção do Profissional", "Relatório de Glosas", "Faturamento x Recebimento"]
-MENUS_ADMIN = ["Valores", "Cadastros", "Acessos"]
+# Seções do menu: (seção, [(página, descrição mostrada ao passar o mouse), ...])
+SECOES_MENU = [
+    ("Visão geral", [
+        ("Painel", "Indicadores e gráficos de todo o histórico de glosas"),
+    ]),
+    ("Operação", [
+        ("Casa das Máquinas", "Importar e auditar o demonstrativo do convênio"),
+        ("Lupa de Glosas", "Pesquisar glosas no último demonstrativo ou no histórico"),
+    ]),
+    ("Relatórios", [
+        ("Produção do Profissional", "Espelho da produção e do repasse de um profissional no mês"),
+        ("Relatório de Glosas", "Relação de glosas em Excel e PDF"),
+        ("Faturamento x Recebimento", "Conferir se o que foi faturado nos lotes foi pago"),
+    ]),
+]
+SECAO_ADMIN = ("Administração", [
+    ("Valores", "Tabelas de faturamento e de repasse por especialidade"),
+    ("Cadastros", "Profissionais da clínica"),
+    ("Acessos", "Usuários, registro de acessos e histórico de alterações"),
+])
+MENUS_ADMIN = [p for p, _ in SECAO_ADMIN[1]]
 eh_admin = st.session_state.nivel_permissao == "Administrador"
-menus = MENUS_BASE + (MENUS_ADMIN if eh_admin else [])
+secoes = SECOES_MENU + ([SECAO_ADMIN] if eh_admin else [])
+paginas = [p for _, itens in secoes for p, _ in itens]
+if st.session_state.get("menu") not in paginas:
+    st.session_state["menu"] = "Painel"
+menu = st.session_state["menu"]
 
 with st.sidebar:
     st.markdown(
-        """<div class='marca'><div class='logo'>🏥</div>
-        <div><div class='nome'>Espaço Saúde</div><div class='sub'>Auditoria & Repasses</div></div></div>""",
+        f"<div class='marca'><div class='logo'>{LOGO_SVG}</div>"
+        "<div><div class='nome'>Espaço Saúde</div><div class='sub'>Auditoria & Repasses</div></div></div>",
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -855,7 +908,15 @@ with st.sidebar:
         f"<span>Perfil: {html.escape(str(st.session_state.nivel_permissao))}</span></div>",
         unsafe_allow_html=True,
     )
-    menu = st.radio("Navegação", menus, label_visibility="collapsed")
+    n = 0
+    for titulo_secao, itens in secoes:
+        st.markdown(f"<div class='nav-secao'>{titulo_secao}</div>", unsafe_allow_html=True)
+        for pagina, descricao in itens:
+            n += 1
+            if st.button(pagina, key=f"nav_{n}", help=descricao,
+                         type="primary" if pagina == menu else "secondary", **FULL_BTN):
+                st.session_state["menu"] = pagina
+                st.rerun()
     st.markdown("---")
     with st.expander("Alterar minha senha"):
         with st.form("form_minha_senha", clear_on_submit=True):
@@ -869,7 +930,7 @@ with st.sidebar:
             else:
                 ok, msg = motor_seguranca.alterar_senha(st.session_state.usuario_atual, atual, nova)
                 (st.success if ok else st.error)(msg)
-    if st.button("Sair do sistema", **FULL_BTN):
+    if st.button("Sair do sistema", key="sair_sistema", **FULL_BTN):
         sair()
 
 if menu in MENUS_ADMIN and not eh_admin:
@@ -879,23 +940,87 @@ if menu in MENUS_ADMIN and not eh_admin:
 df_proc = st.session_state.get("ultimo_processamento", pd.DataFrame())
 mostrar_flash()
 
+PERIODOS = {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12, "Todo o histórico": None}
+
+
+def _desde(periodo):
+    meses = PERIODOS.get(periodo)
+    if not meses:
+        return None
+    inicio = (pd.Timestamp.today().normalize().replace(day=1) - pd.DateOffset(months=meses - 1))
+    return inicio.strftime("%Y-%m-%d")
+
+
+def _filtrar_texto(df, busca):
+    if not busca.strip():
+        return df
+    mask = df.astype(str).apply(lambda c: c.str.contains(busca.strip(), case=False, na=False, regex=False)).any(axis=1)
+    return df[mask]
+
+
 # ─────────────────────────────────────────────────────────────
 # Páginas
 # ─────────────────────────────────────────────────────────────
 if menu == "Painel":
-    cabecalho("Painel geral", "Resumo do último demonstrativo auditado e da base cadastral.")
-    secao("Auditoria do último demonstrativo")
-    kpis_do_processamento(df_proc)
-    secao("Base cadastral")
-    kpis_cadastro()
-    st.markdown("&nbsp;", unsafe_allow_html=True)
-    if df_proc.empty:
-        st.info("Nenhum demonstrativo processado ainda. Envie um arquivo em **Casa das Máquinas**.")
+    cabecalho("Painel geral", "Indicadores de todos os demonstrativos já processados na Casa das Máquinas.")
+    ops_disp = motor_historico.operadoras()
+    if not ops_disp:
+        secao("Base cadastral")
+        kpis_cadastro()
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        st.info("Ainda não há demonstrativos no histórico. Processe um arquivo em **Casa das Máquinas** "
+                "e os gráficos aparecem aqui.")
     else:
-        tabela(df_proc)
+        f1, f2 = st.columns([1, 2])
+        periodo = f1.selectbox("Período (data do atendimento)", list(PERIODOS), index=2, key="painel_periodo")
+        ops_sel = f2.multiselect("Operadoras", ops_disp, default=ops_disp, key="painel_ops")
+        itens = motor_historico.carregar_itens(_desde(periodo), ops_sel or None)
+        r = motor_historico.resumo_painel(itens)
+
+        secao("Glosas no período")
+        c = st.columns(4)
+        c[0].metric("Valor apresentado", brl(r["apresentado"]))
+        c[1].metric("Valor glosado", brl(r["glosado"]))
+        c[2].metric("% glosado", f"{r['pct'] * 100:.1f}%".replace(".", ","))
+        c[3].metric("Itens glosados", f"{r['itens_glosados']:,}".replace(",", "."))
+
+        if r["itens_glosados"] == 0:
+            st.success("Nenhuma glosa no período e nas operadoras escolhidas.")
+        else:
+            g1, g2 = st.columns(2)
+            with g1:
+                secao("Valor glosado por mês")
+                st.bar_chart(r["por_mes"], x="Mês", y="Valor glosado", color="#0E7C86", height=280)
+            with g2:
+                secao("Valor glosado por operadora")
+                st.bar_chart(r["por_operadora"], x="Operadora", y="Valor glosado", color="#0F2A43",
+                             horizontal=True, height=280)
+            secao("Principais motivos de glosa")
+            mot = r["motivos"].copy()
+            mot["% do glosado"] = mot["% do glosado"] * 100
+            tabela(mot, column_config={"% do glosado": st.column_config.NumberColumn(format="%.1f%%")})
+
+        secao("Base cadastral")
+        kpis_cadastro()
+
+        with st.expander("Demonstrativos processados"):
+            lista = motor_historico.listar_demonstrativos()
+            tabela(lista.drop(columns=["id"]))
+            if eh_admin and not lista.empty:
+                rot = {int(x["id"]): f"{x['Arquivo']} — {x['Processado em']} ({x['Operadora']})"
+                       for _, x in lista.iterrows()}
+                d1, d2 = st.columns([3, 1])
+                alvo = d1.selectbox("Remover do histórico", list(rot), format_func=rot.get, key="hist_alvo")
+                conf_del = d2.checkbox("Confirmo", key=f"hist_conf_{alvo}")
+                if d2.button("Remover", disabled=not conf_del, key=f"hist_del_{alvo}", **FULL_BTN):
+                    motor_historico.excluir_demonstrativo(alvo)
+                    registrar_log("Demonstrativo removido do histórico", rot[alvo])
+                    avisar("success", "Demonstrativo removido do histórico.")
+                    st.rerun()
 
 elif menu == "Casa das Máquinas":
-    cabecalho("Casa das Máquinas", "Envie o demonstrativo do convênio para extrair e auditar os itens.")
+    cabecalho("Casa das Máquinas",
+              "Envie o demonstrativo do convênio: o sistema extrai os itens, aponta as glosas e guarda no histórico.")
     c1, c2 = st.columns([2, 1])
     plano = c1.selectbox("Operadora / plano de saúde", PLANOS_SAUDE)
     c2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
@@ -910,36 +1035,64 @@ elif menu == "Casa das Máquinas":
         else:
             with st.spinner("Lendo e auditando o demonstrativo..."):
                 try:
-                    resultado = motor_extracao.extrair_glosas_de_arquivo(
-                        arquivo, plano=plano, somente_glosas=somente_glosas
-                    )
-                    df_res, erro = resultado if isinstance(resultado, tuple) else (resultado, None)
+                    df_res, erro = motor_extracao.extrair_glosas_de_arquivo(arquivo, plano=plano,
+                                                                            somente_glosas=False)
                 except Exception as e:
                     df_res, erro = pd.DataFrame(), f"{type(e).__name__}: {e}"
-
-            if erro:
-                st.error(f"Problema na extração: {erro}")
-            if df_res is not None and not df_res.empty:
+            if df_res is None or df_res.empty:
+                st.error(f"Problema na extração: {erro or 'nenhum registro encontrado.'}")
+            else:
+                operadora = df_res.attrs.get("operadora") or plano
+                df_res["Operadora"] = operadora
+                try:
+                    _, substituiu = motor_historico.salvar_demonstrativo(
+                        df_res, arquivo.name, motor_historico.hash_arquivo(arquivo.getvalue()),
+                        str(st.session_state.usuario_atual), operadora)
+                    aviso_hist = (" Este arquivo já estava no histórico; a versão anterior foi substituída."
+                                  if substituiu else " Guardado no histórico.")
+                except Exception as e:
+                    aviso_hist = f" Não foi possível guardar no histórico: {e}"
+                registrar_log("Demonstrativo processado", f"{arquivo.name} | {operadora} | {len(df_res)} linhas")
                 st.session_state["ultimo_processamento"] = df_res
-                st.success(f"Processamento concluído: {len(df_res)} registros validados.")
-                kpis_do_processamento(df_res)
-                st.markdown("&nbsp;", unsafe_allow_html=True)
-                tabela(df_res)
-                baixar(df_res, "auditoria_glosas")
-            elif not erro:
-                st.warning("Nenhum registro encontrado. Desmarque o filtro de glosas ou confira o arquivo e a operadora.")
+                st.session_state["ultimo_arquivo"] = arquivo.name
+                avisar("success", f"Processamento concluído: {len(df_res)} registros lidos.{aviso_hist}")
+                st.rerun()
+
+    if not df_proc.empty:
+        secao(f"Resultado: {st.session_state.get('ultimo_arquivo', 'último demonstrativo')}")
+        kpis_do_processamento(df_proc)
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        vis = df_proc[df_proc["Valor da glosa"] > 0.005] if somente_glosas else df_proc
+        if vis.empty:
+            st.success("Nenhum item com glosa neste demonstrativo.")
+        else:
+            st.caption(f"{len(vis)} de {len(df_proc)} registros")
+            tabela(vis)
+            baixar(vis, "auditoria_glosas")
 
 elif menu == "Lupa de Glosas":
-    cabecalho("Lupa de glosas", "Pesquise e filtre os itens do último demonstrativo.")
-    if df_proc.empty:
-        st.info("Nenhum arquivo auditado. Processe um demonstrativo em **Casa das Máquinas**.")
+    cabecalho("Lupa de glosas", "Pesquise glosas no último demonstrativo processado ou em todo o histórico.")
+    opcoes = ["Todo o histórico"] + (["Último demonstrativo processado"] if not df_proc.empty else [])
+    l1, l2 = st.columns([1, 2])
+    origem = l1.radio("Onde pesquisar", opcoes, key="lupa_origem")
+    if origem == "Todo o histórico":
+        ops_disp = motor_historico.operadoras()
+        ops_sel = l2.multiselect("Operadoras", ops_disp, default=ops_disp, key="lupa_ops")
+        periodo = l2.selectbox("Período (data do atendimento)", list(PERIODOS), index=3, key="lupa_periodo")
+        base = motor_historico.carregar_itens(_desde(periodo), ops_sel or None) if ops_disp else pd.DataFrame()
+        base = base.drop(columns=["_iso"], errors="ignore")
     else:
-        busca = st.text_input("Buscar em todas as colunas", placeholder="Paciente, procedimento, motivo da glosa...")
-        df_view = df_proc
-        if busca.strip():
-            mask = df_proc.astype(str).apply(lambda c: c.str.contains(busca.strip(), case=False, na=False)).any(axis=1)
-            df_view = df_proc[mask]
-        st.caption(f"{len(df_view)} de {len(df_proc)} registros")
+        base = df_proc
+    if base.empty:
+        st.info("Nenhum demonstrativo processado ainda. Envie um arquivo em **Casa das Máquinas**.")
+    else:
+        b1, b2 = st.columns([3, 1])
+        busca = b1.text_input("Buscar em todas as colunas", placeholder="Paciente, guia, procedimento, motivo...")
+        b2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        so_glosas = b2.checkbox("Só itens com glosa", value=True, key="lupa_so_glosas")
+        df_view = base[base["Valor da glosa"] > 0.005] if so_glosas else base
+        df_view = _filtrar_texto(df_view, busca)
+        st.caption(f"{len(df_view)} registro(s) · valor glosado: {brl(float(df_view['Valor da glosa'].sum()))}")
         tabela(df_view)
         baixar(df_view, "lupa_glosas")
 
