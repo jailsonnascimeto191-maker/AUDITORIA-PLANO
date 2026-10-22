@@ -3,8 +3,18 @@ Extrator inteligente de glosas com Forward Fill para dados hierárquicos e Trava
 
 Uso principal (chamado pelo app):
     df, erro = extrair_glosas_de_arquivo(arquivo, plano="Unimed Recife", somente_glosas=True)
-O DataFrame retornado traz em df.attrs: "mapeamento" (coluna encontrada para cada campo)
-e "operadora" (plano escolhido ou detectado pelo nome do arquivo).
+O DataFrame retornado traz em df.attrs:
+  - "mapeamento": coluna encontrada para cada campo
+  - "operadora": plano escolhido ou detectado pelo nome do arquivo
+  - "abas_total" / "abas_com_dados": quantas abas/tabelas foram lidas e quantas tinham dados
+
+Novidades desta versão (sem quebrar a anterior):
+  - novos campos: Quantidade, Valor unitário, Lote, Status da glosa, Data de pagamento
+  - "Status da glosa" é normalizado (Sem glosa / Glosa parcial / Glosa total) e usa a coluna de
+    status do demonstrativo, quando existir, para confirmar a glosa linha a linha
+  - data de pagamento e lote também são lidos de cabeçalhos soltos acima da tabela
+    ("Data de pagamento: 10/09/2026", "Lote: 12345")
+  - parâmetro data_pagamento_padrao em extrair_glosas_de_arquivo()
 """
 import csv
 import io
@@ -31,6 +41,7 @@ try:  # opcional: usado só para detectar a operadora pelo nome do arquivo
 except ImportError:
     extrair_nome_operadora = None
 
+# Colunas originais (compatibilidade com o restante do sistema)
 COLUNAS_PADRAO_GLOSAS = [
     "Data do evento",
     "Protocolo",
@@ -43,6 +54,9 @@ COLUNAS_PADRAO_GLOSAS = [
     "Valor da glosa",
     "Motivo da glosa",
 ]
+# Colunas novas (ficam sempre depois das originais)
+COLUNAS_EXTRAS = ["Quantidade", "Valor unitário", "Lote", "Status da glosa", "Data de pagamento"]
+COLUNAS_COMPLETAS = COLUNAS_PADRAO_GLOSAS + COLUNAS_EXTRAS
 
 PLANO_AUTOMATICO = "Identificar pelo arquivo"
 
@@ -55,7 +69,7 @@ CAMPOS = {
         sin=["DATA ATENDIMENTO", "DATA REALIZACAO", "DATA EXECUCAO", "DATA EVENTO",
              "DATA PROCEDIMENTO", "DATA SERVICO", "DT ATENDIMENTO", "DT REALIZACAO",
              "DATA", "DT"],
-        excl=["NASC", "PAGAMENTO", "VENC", "PROTOCOLO", "ENVIO", "EMISSAO", "ALTA"],
+        excl=["NASC", "PAGAMENTO", "PGTO", "CREDITO", "VENC", "PROTOCOLO", "ENVIO", "EMISSAO", "ALTA"],
     ),
     "Protocolo": dict(
         tipo="id",
@@ -97,26 +111,59 @@ CAMPOS = {
              "VALOR PLANO", "INFORMADO", "APRESENTADO", "COBRADO", "FATURADO",
              "VALOR", "VLR", "VL"],
         excl=["GLOSA", "PAGO", "RECEBIDO", "LIBERADO", "LIQUIDO", "RETIDO", "APROVADO",
-              "PAGAMENTO", "UNIT", "QTD", "QTDE", "QUANTIDADE", "SOLICITADA", "SESSAO"],
+              "PAGAMENTO", "UNIT", "UNITARIO", "QTD", "QTDE", "QUANTIDADE", "SOLICITADA", "SESSAO"],
     ),
     "Valor pago": dict(
         tipo="dinheiro",
         sin=["VALOR PAGO", "VALOR LIBERADO", "VALOR RECEBIDO", "VALOR LIQUIDO",
              "VALOR APROVADO", "VALOR ACEITO", "VL PAGO", "VLR PAGO", "PAGO",
              "RECEBIDO", "LIBERADO", "LIQUIDO", "APROVADO"],
-        excl=["GLOSA", "INFORMADO", "APRESENTADO", "COBRADO", "QTD", "QTDE", "QUANTIDADE", "SOLICITADA", "SESSAO"],
+        excl=["GLOSA", "INFORMADO", "APRESENTADO", "COBRADO", "QTD", "QTDE", "QUANTIDADE",
+              "SOLICITADA", "SESSAO", "DATA", "DT", "UNIT", "UNITARIO"],
     ),
     "Valor da glosa": dict(
         tipo="dinheiro",
         sin=["VALOR GLOSA", "VALOR GLOSADO", "VL GLOSA", "VLR GLOSA", "VALOR RETIDO",
              "GLOSADO", "GLOSA", "RETIDO"],
-        excl=["MOTIVO", "JUSTIFICATIVA", "DESCRICAO", "CODIGO", "COD", "OBS", "TIPO", "QTD", "QTDE", "QUANTIDADE"],
+        excl=["MOTIVO", "JUSTIFICATIVA", "DESCRICAO", "CODIGO", "COD", "OBS", "TIPO", "QTD",
+              "QTDE", "QUANTIDADE", "STATUS", "SITUACAO"],
     ),
     "Motivo da glosa": dict(
         tipo="texto",
         sin=["MOTIVO GLOSA", "DESCRICAO GLOSA", "DESCRICAO MOTIVO", "MOTIVO",
              "JUSTIFICATIVA", "OBSERVACAO", "OBS", "CRITICA", "CODIGO GLOSA", "GLOSA"],
-        excl=["VALOR", "VL", "VLR"],
+        excl=["VALOR", "VL", "VLR", "STATUS", "SITUACAO", "TEM", "HOUVE"],
+    ),
+    # ---- campos novos ----
+    "Quantidade": dict(
+        tipo="qtd",
+        sin=["QUANTIDADE EXECUTADA", "QTD EXECUTADA", "QTDE EXECUTADA", "QTD REALIZADA",
+             "QUANTIDADE", "QTDE", "QTD", "SESSOES", "QUANT"],
+        excl=["VALOR", "VL", "VLR", "GLOSA", "GLOSADA"],
+    ),
+    "Valor unitário": dict(
+        tipo="dinheiro",
+        sin=["VALOR UNITARIO", "VLR UNITARIO", "VL UNITARIO", "VALOR UNIT", "UNITARIO", "UNIT"],
+        excl=["GLOSA", "PAGO", "TOTAL", "QTD", "QTDE", "QUANTIDADE"],
+    ),
+    "Lote": dict(
+        tipo="id",
+        sin=["NUMERO LOTE", "NRO LOTE", "NR LOTE", "N LOTE", "LOTE"],
+        excl=["DATA", "DT", "VALOR", "STATUS", "SITUACAO"],
+    ),
+    "Status da glosa": dict(
+        tipo="texto",
+        sin=["STATUS GLOSA", "SITUACAO GLOSA", "TEM GLOSA", "HOUVE GLOSA", "GLOSADO SN",
+             "SITUACAO", "STATUS"],
+        excl=["VALOR", "VL", "VLR", "DATA", "DT", "MOTIVO", "DESCRICAO", "CODIGO", "COD"],
+    ),
+    "Data de pagamento": dict(
+        tipo="data",
+        sin=["DATA PAGAMENTO", "DATA DO PAGAMENTO", "DT PAGAMENTO", "DATA PGTO", "DT PGTO",
+             "DATA CREDITO", "DATA LIQUIDACAO", "DATA QUITACAO", "PAGAMENTO"],
+        excl=["ATENDIMENTO", "REALIZACAO", "EXECUCAO", "EVENTO", "NASC", "PROTOCOLO", "ENVIO",
+              "EMISSAO", "ALTA", "VENC", "VALOR", "FORMA"],
+        exige_nome=True,
     ),
 }
 
@@ -135,6 +182,8 @@ _RE_DIN_TEXTO = re.compile(r"\d{1,3}(?:\.\d{3})*,\d{2}")
 # Protocolo/guia no texto corrido: exige pelo menos um dígito para não capturar palavras
 _RE_PROTOCOLO = re.compile(r"(?:protocolo|prot\.)[\s:nº°.]*((?=[A-Z0-9.-]*\d)[A-Z0-9.-]{5,20})", re.I)
 _RE_GUIA = re.compile(r"(?:guia|senha|doc\.)[\s:nº°.]*((?=[A-Z0-9.-]*\d)[A-Z0-9.-]{5,20})", re.I)
+_RE_LOTE = re.compile(r"lote[\s:nº°.]*((?=[A-Z0-9.-]*\d)[A-Z0-9.-]{3,20})", re.I)
+_RE_QTD = re.compile(r"^\d{1,3}([.,]0+)?$")
 _PALAVRAS_PROC = {"CONSULTA", "EXAME", "SESSAO", "PROCEDIMENTO", "TERAPIA", "HEMOGRAMA",
                   "RADIOGRAFIA", "ULTRASSONOGRAFIA", "TOMOGRAFIA", "RESSONANCIA", "CIRURGIA",
                   "AVALIACAO", "ATENDIMENTO", "DIARIA", "TAXA", "MATERIAL", "MEDICAMENTO"}
@@ -203,10 +252,10 @@ def padronizar_data(val):
     return "-"
 
 
-def _score_nome(h_norm, campo):
+def _score_nome(h_norm, campo, campos=None):
     if not h_norm:
         return 0.0
-    cfg = CAMPOS[campo]
+    cfg = (campos or CAMPOS)[campo]
     hw = h_norm.split()
     hc = h_norm.replace(" ", "")
     if any(w.startswith(e) for w in hw for e in cfg["excl"]):
@@ -230,11 +279,21 @@ def _score_nome(h_norm, campo):
     return melhor
 
 
+def _eh_qtd(orig, v):
+    if isinstance(orig, (int, float)) and not isinstance(orig, bool):
+        try:
+            return float(orig).is_integer() and 0 <= abs(float(orig)) <= 999
+        except (TypeError, ValueError):
+            return False
+    return bool(_RE_QTD.match(v.replace(" ", "")))
+
+
 def _perfil(serie):
     pares = [(v, _txt(v)) for v in serie.tolist()]
     pares = [(v, t) for v, t in pares if t][:60]
     amostra = [t for _, t in pares]
-    perfil = dict(data=0.0, dinheiro=0.0, codigo=0.0, nome=0.0, texto=0.0, id=0.0, tam=0.0, n=len(amostra))
+    perfil = dict(data=0.0, dinheiro=0.0, codigo=0.0, nome=0.0, texto=0.0, id=0.0, qtd=0.0,
+                  tam=0.0, n=len(amostra))
     if not amostra:
         return perfil
     n = len(amostra)
@@ -261,6 +320,7 @@ def _perfil(serie):
                 c["nome"] += 1
     for k, v in c.items():
         perfil[k] = v / n
+    perfil["qtd"] = sum(1 for orig, v in pares if _eh_qtd(orig, v)) / n
     perfil["tam"] = sum(len(v) for v in amostra) / n
     perfil["id"] = sum(
         1 for v in amostra
@@ -270,10 +330,14 @@ def _perfil(serie):
     return perfil
 
 
-def _score_campo(campo, h_norm, perfil):
-    tipo = CAMPOS[campo]["tipo"]
-    frac = perfil.get(tipo, 0.0)
-    nome = _score_nome(h_norm, campo)
+def _score_campo(campo, h_norm, perfil, campos=None):
+    campos = campos or CAMPOS
+    cfg = campos[campo]
+    tipo = cfg["tipo"]
+    frac = 1.0 if tipo == "livre" else perfil.get(tipo, 0.0)  # "livre": decide só pelo nome do cabeçalho
+    nome = _score_nome(h_norm, campo, campos)
+    if cfg.get("exige_nome") and nome <= 0:
+        return 0.0
     compat = 0.3 + 0.7 * frac
     score = nome * compat
     if tipo in ("data", "codigo", "nome"):
@@ -283,7 +347,8 @@ def _score_campo(campo, h_norm, perfil):
     return score
 
 
-def _preparar_tabela(raw):
+def _preparar_tabela(raw, campos=None):
+    campos = campos or CAMPOS
     raw = raw.copy().dropna(how="all").dropna(axis=1, how="all").reset_index(drop=True)
     raw.columns = range(raw.shape[1])
     if raw.empty:
@@ -294,7 +359,7 @@ def _preparar_tabela(raw):
         hits = sum(
             1 for cel in raw.iloc[i].tolist()
             if _txt(cel) and not re.fullmatch(r"[\d.,/ R$-]+", _txt(cel))
-            and any(_score_nome(_norm(_txt(cel)), campo) >= 70 for campo in CAMPOS)
+            and any(_score_nome(_norm(_txt(cel)), campo, campos) >= 70 for campo in campos)
         )
         if hits > melhor_hits:
             melhor_i, melhor_hits = i, hits
@@ -333,6 +398,43 @@ def _remover_totais(df):
     if df.empty:
         return df
     return df[~df.apply(eh_total, axis=1)].reset_index(drop=True)
+
+
+def _texto_global(raw, rotulo, regex_valor, max_linhas=30):
+    """Procura, no topo da planilha (fora da tabela), valores soltos como
+    'Data de pagamento: 10/09/2026' ou 'Lote: 12345'. Retorna o texto encontrado ou ''."""
+    try:
+        n = min(len(raw), max_linhas)
+        for i in range(n):
+            cels = [_txt(c) for c in raw.iloc[i].tolist()]
+            for j, t in enumerate(cels):
+                if not t or not re.search(rotulo, _norm(t)):
+                    continue
+                m = regex_valor.search(t)
+                if m:
+                    return m.group(1) if m.groups() else m.group(0)
+                for prox in [c for c in cels[j + 1:j + 4] if c]:
+                    m = regex_valor.search(prox)
+                    if m:
+                        return m.group(1) if m.groups() else m.group(0)
+    except Exception:
+        pass
+    return ""
+
+
+_RE_LOTE_CEL = re.compile(r"^((?=[A-Z0-9.-]*\d)[A-Z0-9.-]{3,20})$", re.I)
+
+
+def _lote_global(raw):
+    achado = _texto_global(raw, r"\bLOTE\b", _RE_LOTE)
+    if not achado:
+        achado = _texto_global(raw, r"\bLOTE\b", _RE_LOTE_CEL)
+    return achado
+
+
+def _data_pagamento_global(raw):
+    achado = _texto_global(raw, r"\b(PAGAMENTO|PGTO|CREDITO)\b", _RE_DATA)
+    return padronizar_data(achado) if achado else ""
 
 
 def _serie_num(df, col, cache):
@@ -405,7 +507,25 @@ def _descobrir_mapeamento(df):
     return mapa
 
 
-def _montar_saida(df, mapa):
+def _status_indica_glosa(valor):
+    """True = o status diz que houve glosa; False = diz que não houve; None = não dá para saber."""
+    n = _norm(valor)
+    if not n:
+        return None
+    if re.search(r"\bSEM GLOSA\b|\bNAO GLOSAD|\bNAO HOUVE\b|\bSEM RESTRICAO\b", n):
+        return False
+    if n in ("NAO", "N"):
+        return False
+    if n in ("SIM", "S"):
+        return True
+    if re.search(r"GLOS|NEGAD|RECUS|INDEFERID|PARCIAL|CORTAD|DEVOLVID", n):
+        return True
+    if re.search(r"\bPAGO\b|LIBERAD|APROVAD|ACEIT|AUTORIZAD|QUITAD|\bOK\b", n):
+        return False
+    return None
+
+
+def _montar_saida(df, mapa, pag_global="", lote_global=""):
     def col(campo):
         return df[mapa[campo]] if campo in mapa else None
 
@@ -420,9 +540,19 @@ def _montar_saida(df, mapa):
     out["Doc Original"] = s.apply(_txt) if s is not None else pd.NA
     s = col("Nome do paciente")
     out["Nome do paciente"] = s.apply(_txt) if s is not None else pd.NA
+    s = col("Lote")
+    if s is not None:
+        out["Lote"] = s.apply(_txt)
+    else:
+        out["Lote"] = lote_global if lote_global else pd.NA
+    s = col("Data de pagamento")
+    if s is not None:
+        out["Data de pagamento"] = s.apply(padronizar_data)
+    else:
+        out["Data de pagamento"] = pag_global if pag_global else pd.NA
 
     # 2. Preenchimento para baixo (Forward Fill para dados hierárquicos)
-    for c in ["Data do evento", "Protocolo", "Doc Original", "Nome do paciente"]:
+    for c in ["Data do evento", "Protocolo", "Doc Original", "Nome do paciente", "Lote", "Data de pagamento"]:
         out[c] = out[c].replace(["", "-", "Não identificado"], pd.NA)
         out[c] = out[c].ffill()
         if c == "Nome do paciente":
@@ -440,8 +570,27 @@ def _montar_saida(df, mapa):
     s = col("Valor pago")
     out["Valor pago"] = s.apply(limpar_valor_monetario) if s is not None else 0.0
 
+    # Quantidade (nunca zero: usada como divisor do valor unitário)
+    s = col("Quantidade")
+    if s is not None:
+        qtd = s.apply(limpar_valor_monetario)
+        out["Quantidade"] = qtd.where(qtd > 0, 1.0)
+    else:
+        out["Quantidade"] = 1.0
+
+    s = col("Valor unitário")
+    if s is not None:
+        out["Valor unitário"] = s.apply(limpar_valor_monetario).abs().round(2)
+    else:
+        out["Valor unitário"] = (out["Valor informado"] / out["Quantidade"]).round(2)
+
     tem_inf_pago = "Valor informado" in mapa and "Valor pago" in mapa
     calculada = (out["Valor informado"] - out["Valor pago"]).clip(lower=0.0).round(2)
+
+    s = col("Status da glosa")
+    flag = s.apply(_status_indica_glosa) if s is not None else pd.Series([None] * len(out), index=out.index)
+    status_diz_glosa = flag.map(lambda x: x is True)
+
     s = col("Valor da glosa")
     if s is not None:
         g = s.apply(limpar_valor_monetario).abs().round(2)
@@ -453,6 +602,11 @@ def _montar_saida(df, mapa):
     else:
         out["Valor da glosa"] = 0.0
 
+    # A coluna de status do demonstrativo confirma glosas que ficaram sem valor na linha
+    if tem_inf_pago:
+        mask = status_diz_glosa & (out["Valor da glosa"] <= 0.005) & (calculada > 0.005)
+        out.loc[mask, "Valor da glosa"] = calculada[mask]
+
     s = col("Motivo da glosa")
     out["Motivo da glosa"] = s.apply(_txt) if s is not None else ""
 
@@ -461,7 +615,16 @@ def _montar_saida(df, mapa):
         "Glosa Silenciosa: Valor zerado ou cortado sem justificativa informada no demonstrativo"
     )
 
-    return out[COLUNAS_PADRAO_GLOSAS]
+    # Status normalizado
+    def _rotulo(i):
+        g = out.at[i, "Valor da glosa"]
+        if g > 0.005:
+            return "Glosa total" if out.at[i, "Valor pago"] <= 0.005 else "Glosa parcial"
+        return "Glosa (valor não informado)" if status_diz_glosa.at[i] else "Sem glosa"
+
+    out["Status da glosa"] = [_rotulo(i) for i in out.index]
+
+    return out[COLUNAS_COMPLETAS]
 
 
 def _limpar_linhas(out):
@@ -477,13 +640,16 @@ def _limpar_linhas(out):
 
 
 def _processar_bruto(raw):
+    vazio = pd.DataFrame(columns=COLUNAS_COMPLETAS)
+    pag_global = _data_pagamento_global(raw)
+    lote_global = _lote_global(raw)
     tabela = _preparar_tabela(raw)
     if tabela.empty or tabela.shape[1] < 2:
-        return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), {}
+        return vazio, {}
     mapa = _descobrir_mapeamento(tabela)
     if len(mapa) < 2:
-        return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), mapa
-    return _limpar_linhas(_montar_saida(tabela, mapa)), mapa
+        return vazio, mapa
+    return _limpar_linhas(_montar_saida(tabela, mapa, pag_global, lote_global)), mapa
 
 
 def _com_cabecalho(df):
@@ -496,7 +662,7 @@ def _com_cabecalho(df):
 
 def mapear_dataframe_para_glosas(df_bruto, somente_glosas=True):
     if df_bruto is None or df_bruto.empty:
-        return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS)
+        return pd.DataFrame(columns=COLUNAS_COMPLETAS)
     df, mapa = _processar_bruto(_com_cabecalho(df_bruto))
     if somente_glosas:
         df = df[df["Valor da glosa"] > 0.005].reset_index(drop=True)
@@ -509,7 +675,7 @@ def mapear_dataframe_para_glosas(df_bruto, somente_glosas=True):
 # --------------------------------------------------------------------------
 def _linhas_texto_para_df(linhas):
     regs = []
-    contexto = {"data": "-", "nome": "", "protocolo": "-", "guia": "-"}
+    contexto = {"data": "-", "nome": "", "protocolo": "-", "guia": "-", "lote": "-", "pagto": "-"}
 
     for ln in linhas:
         m_prot = _RE_PROTOCOLO.search(ln)
@@ -520,9 +686,16 @@ def _linhas_texto_para_df(linhas):
         if m_guia:
             contexto["guia"] = m_guia.group(1)
 
+        m_lote = _RE_LOTE.search(ln)
+        if m_lote:
+            contexto["lote"] = m_lote.group(1)
+
         m_data = _RE_DATA.search(ln)
         if m_data:
-            contexto["data"] = m_data.group(1)
+            if re.search(r"pagamento|pgto|cr[eé]dito", ln, re.I):
+                contexto["pagto"] = m_data.group(1)
+            else:
+                contexto["data"] = m_data.group(1)
 
         valores = _RE_DIN_TEXTO.findall(ln)
         cod = re.search(r"\b(\d{8}|\d{1,2}\.\d{2}\.\d{2}\.\d{2}-?\d?)\b", ln)
@@ -545,6 +718,10 @@ def _linhas_texto_para_df(linhas):
         inf, pago = v[0], v[1]
         glosa = v[2] if len(v) >= 3 else max(inf - pago, 0.0)
 
+        status = "Sem glosa"
+        if glosa > 0.005:
+            status = "Glosa total" if pago <= 0.005 else "Glosa parcial"
+
         regs.append({
             "Data do evento": padronizar_data(contexto["data"]),
             "Protocolo": contexto["protocolo"] or "-",
@@ -554,8 +731,13 @@ def _linhas_texto_para_df(linhas):
             "Procedimento": resto,
             "Valor informado": inf, "Valor pago": pago, "Valor da glosa": glosa,
             "Motivo da glosa": "",
+            "Quantidade": 1.0,
+            "Valor unitário": round(inf, 2),
+            "Lote": contexto["lote"] or "-",
+            "Status da glosa": status,
+            "Data de pagamento": padronizar_data(contexto["pagto"]),
         })
-    return pd.DataFrame(regs, columns=COLUNAS_PADRAO_GLOSAS)
+    return pd.DataFrame(regs, columns=COLUNAS_COMPLETAS)
 
 
 def _linhas_pdf(doc):
@@ -599,7 +781,7 @@ def extrair_glosas_xml(arquivo_xml):
 
     percorrer(root, {})
     if not registros:
-        return pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS), {}
+        return pd.DataFrame(columns=COLUNAS_COMPLETAS), {}
     df = pd.DataFrame(registros)
     return _processar_bruto(_com_cabecalho(df))
 
@@ -631,9 +813,13 @@ def _detectar_operadora(plano, nome_arquivo):
 # --------------------------------------------------------------------------
 # Função principal chamada pelo app
 # --------------------------------------------------------------------------
-def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_glosas=True):
-    """Retorna (DataFrame, mensagem_de_erro_ou_None)."""
-    vazio = pd.DataFrame(columns=COLUNAS_PADRAO_GLOSAS)
+def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_glosas=True,
+                              data_pagamento_padrao=None):
+    """Retorna (DataFrame, mensagem_de_erro_ou_None).
+
+    data_pagamento_padrao: data (date/datetime/'dd/mm/aaaa') usada nas linhas em que o
+    demonstrativo não informa a data de pagamento (nem em coluna, nem no cabeçalho)."""
+    vazio = pd.DataFrame(columns=COLUNAS_COMPLETAS)
     try:
         nome_original = getattr(arquivo_upload, "name", "") or ""
         nome = nome_original.lower()
@@ -648,7 +834,7 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
                 abas = pd.read_excel(io.BytesIO(dados), sheet_name=None, header=None, dtype=object)
             except ImportError as e:
                 return vazio, f"Biblioteca ausente para ler Excel ('openpyxl' para .xlsx, 'xlrd' para .xls): {e}"
-            for aba in abas.values():
+            for aba in abas.values():  # TODAS as abas, sem limite
                 resultados.append(_processar_bruto(aba))
 
         elif nome.endswith((".csv", ".txt", ".tsv")):
@@ -712,10 +898,19 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
 
         df = pd.concat(dfs, ignore_index=True)
         total_lidos = len(df)
+
+        if data_pagamento_padrao is not None and str(data_pagamento_padrao).strip():
+            padrao = padronizar_data(data_pagamento_padrao)
+            if padrao != "-":
+                df.loc[df["Data de pagamento"].isin(["", "-"]), "Data de pagamento"] = padrao
+
         if somente_glosas:
             df = df[df["Valor da glosa"] > 0.005].reset_index(drop=True)
         df.attrs["mapeamento"] = mapa
         df.attrs["operadora"] = _detectar_operadora(plano, nome_original)
+        df.attrs["abas_total"] = len(resultados)
+        df.attrs["abas_com_dados"] = len(dfs)
+        df.attrs["linhas_lidas"] = total_lidos
 
         if df.empty:
             return df, (f"Tabela lida ({total_lidos} linhas), mas nenhuma glosa maior que zero foi encontrada. "
