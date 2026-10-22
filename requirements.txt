@@ -6,5 +6,4 @@ XlsxWriter
 PyMuPDF
 reportlab
 python-docx
-reportlab
 xlrd
