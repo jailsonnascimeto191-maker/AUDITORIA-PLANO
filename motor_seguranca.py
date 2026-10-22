@@ -5,13 +5,12 @@ gestão de usuários e trilha de auditoria.
 """
 import hashlib
 import hmac
+import math
 import os
 import secrets
-import sqlite3
-from contextlib import closing
 from datetime import datetime, timedelta
 
-import pandas as pd
+import banco
 
 DB_SEGURANCA = "seguranca_sistema.db"
 
@@ -25,11 +24,7 @@ MSG_INVALIDO = "Usuário ou senha inválidos."
 
 
 def _conn():
-    return closing(sqlite3.connect(DB_SEGURANCA))
-
-
-def _colunas(cur, tabela):
-    return {r[1] for r in cur.execute(f"PRAGMA table_info({tabela})")}
+    return banco.conectar(DB_SEGURANCA)
 
 
 def init_db_seguranca():
@@ -51,12 +46,12 @@ def init_db_seguranca():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL,
                 ip_acesso TEXT DEFAULT 'Local',
-                data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                data_hora TEXT,
                 acao TEXT DEFAULT 'LOGIN'
             )"""
         )
         # Migrações de colunas novas (bancos já existentes continuam funcionando).
-        cols = _colunas(cur, "usuarios")
+        cols = banco.colunas(conn, "usuarios")
         novas = {
             "trocar_senha": "INTEGER NOT NULL DEFAULT 0",
             "falhas": "INTEGER NOT NULL DEFAULT 0",
@@ -132,7 +127,7 @@ def _inserir(cur, username, senha, role, trocar):
 def _log(cur, username, acao):
     cur.execute(
         "INSERT INTO logs_acesso (username, acao, data_hora) VALUES (?, ?, ?)",
-        (_normalizar(username)[:60], acao, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        (_normalizar(username)[:60], acao, banco.agora_txt()),
     )
 
 
@@ -154,14 +149,14 @@ def criar_usuario(username, senha, role="Comum", trocar_senha=True, validar=True
             _log(cur, username, "USUARIO_CRIADO")
             conn.commit()
             return True, f"Usuário '{username}' criado."
-        except sqlite3.IntegrityError:
+        except banco.IntegrityError:
             return False, "Esse nome de usuário já existe."
 
 
 def autenticar_usuario(username, senha):
     """Valida as credenciais. Retorna (ok, perfil, mensagem)."""
     username = _normalizar(username)
-    agora = datetime.now()
+    agora = banco.agora()
     with _conn() as conn:
         cur = conn.cursor()
         row = cur.execute(
@@ -180,7 +175,7 @@ def autenticar_usuario(username, senha):
         if bloqueado_ate and datetime.fromisoformat(bloqueado_ate) > agora:
             _log(cur, username, "BLOQUEADO")
             conn.commit()
-            minutos = int((datetime.fromisoformat(bloqueado_ate) - agora).total_seconds() // 60) + 1
+            minutos = max(1, math.ceil((datetime.fromisoformat(bloqueado_ate) - agora).total_seconds() / 60))
             return False, None, f"Muitas tentativas. Tente de novo em {minutos} minuto(s)."
 
         calculado, _ = _hash(senha or "", salt, it)
@@ -272,12 +267,12 @@ def redefinir_senha(username, por_admin):
 
 def listar_usuarios():
     with _conn() as conn:
-        return pd.read_sql_query(
-            "SELECT username AS 'Usuário', role AS 'Perfil', "
-            "CASE ativo WHEN 1 THEN 'Ativo' ELSE 'Desativado' END AS 'Situação', "
-            "CASE trocar_senha WHEN 1 THEN 'Sim' ELSE 'Não' END AS 'Troca de senha pendente', "
-            "COALESCE(ultimo_login, '—') AS 'Último acesso' FROM usuarios ORDER BY username",
+        return banco.ler_df(
             conn,
+            'SELECT username AS "Usuário", role AS "Perfil", '
+            'CASE ativo WHEN 1 THEN \'Ativo\' ELSE \'Desativado\' END AS "Situação", '
+            'CASE trocar_senha WHEN 1 THEN \'Sim\' ELSE \'Não\' END AS "Troca de senha pendente", '
+            'COALESCE(ultimo_login, \'—\') AS "Último acesso" FROM usuarios ORDER BY username',
         )
 
 
@@ -303,8 +298,8 @@ def atualizar_usuario(username, role, ativo, por_admin):
 def obter_relatorio_acessos():
     """Retorna o histórico de logins e tentativas de acesso."""
     with _conn() as conn:
-        return pd.read_sql_query(
-            "SELECT username AS Usuário, acao AS Evento, data_hora AS 'Data/Hora' "
-            "FROM logs_acesso ORDER BY id DESC LIMIT 500",
+        return banco.ler_df(
             conn,
+            'SELECT username AS "Usuário", acao AS "Evento", data_hora AS "Data/Hora" '
+            "FROM logs_acesso ORDER BY id DESC LIMIT 500",
         )

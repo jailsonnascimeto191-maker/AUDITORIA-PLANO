@@ -2,8 +2,6 @@ import html
 import io
 import inspect
 import time
-import sqlite3
-from contextlib import closing
 from types import SimpleNamespace
 
 import pandas as pd
@@ -17,6 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+import banco  # noqa: E402
 import motor_seguranca  # noqa: E402
 import motor_extracao  # noqa: E402
 import paginas_relatorios  # noqa: E402
@@ -83,12 +82,12 @@ TIPOS = {
 # Banco de dados local
 # ─────────────────────────────────────────────────────────────
 def conectar():
-    return closing(sqlite3.connect(DB_VALORES))
+    return banco.conectar(DB_VALORES)
 
 
 def consultar(sql, params=()):
     with conectar() as conn:
-        return pd.read_sql_query(sql, conn, params=params)
+        return banco.ler_df(conn, sql, params)
 
 
 def init_db():
@@ -170,11 +169,11 @@ def registrar_log(acao, detalhe):
         with conectar() as conn:
             conn.execute(
                 "INSERT INTO log_alteracoes (data_hora, usuario, acao, detalhe) "
-                "VALUES (datetime('now','localtime'), ?, ?, ?)",
-                (str(st.session_state.get("usuario_atual")), acao, detalhe),
+                "VALUES (?, ?, ?, ?)",
+                (banco.agora_txt(), str(st.session_state.get("usuario_atual")), acao, detalhe),
             )
             conn.commit()
-    except sqlite3.Error:
+    except banco.Error:
         pass
 
 
@@ -184,7 +183,7 @@ def especialidades_disponiveis():
         with conectar() as conn:
             for tb in ("tabela_valores_faturamento", "tabela_valores_repasse"):
                 extras += [r[0] for r in conn.execute(f"SELECT DISTINCT especialidade FROM {tb}") if r[0]]
-    except sqlite3.Error:
+    except banco.Error:
         pass
     return ESPECIALIDADES + sorted({e for e in extras if e not in ESPECIALIDADES})
 
@@ -208,11 +207,11 @@ def cadastrar_profissional(nome, registro, especialidade):
         with conectar() as conn:
             conn.execute(
                 "INSERT INTO tabela_profissionais (nome, registro, especialidade, ativo, criado_em, criado_por) "
-                "VALUES (?, ?, ?, 1, datetime('now','localtime'), ?)",
-                (nome, registro, especialidade, str(st.session_state.get("usuario_atual"))),
+                "VALUES (?, ?, ?, 1, ?, ?)",
+                (nome, registro, especialidade, banco.agora_txt(), str(st.session_state.get("usuario_atual"))),
             )
             conn.commit()
-    except sqlite3.IntegrityError:
+    except banco.IntegrityError:
         return False, f"Já existe um profissional com o registro {registro} em {especialidade.title()}."
     registrar_log("Cadastro de profissional", f"{nome} | {registro} | {especialidade}")
     return True, f"Profissional {nome} cadastrado com sucesso."
@@ -230,7 +229,7 @@ def atualizar_profissional(pid, nome, registro, especialidade, ativo):
                 (nome, registro, especialidade, int(ativo), int(pid)),
             )
             conn.commit()
-    except sqlite3.IntegrityError:
+    except banco.IntegrityError:
         return False, "Já existe outro profissional com esse registro nessa especialidade."
     registrar_log("Edição de profissional", f"id {pid} | {nome} | {registro} | {especialidade} | ativo={int(ativo)}")
     return True, "Cadastro atualizado."
@@ -415,7 +414,7 @@ def indicadores_cadastro():
             ind["prof_ativos"] = conn.execute("SELECT COUNT(*) FROM tabela_profissionais WHERE ativo=1").fetchone()[0]
             ind["regras_fat"] = conn.execute("SELECT COUNT(*) FROM tabela_valores_faturamento").fetchone()[0]
             ind["regras_rep"] = conn.execute("SELECT COUNT(*) FROM tabela_valores_repasse").fetchone()[0]
-    except sqlite3.Error:
+    except banco.Error:
         pass
     return ind
 
@@ -1042,6 +1041,11 @@ elif menu == "Cadastros":
 
 elif menu == "Acessos":
     cabecalho("Segurança e acessos", "Usuários do sistema, registro de acessos e histórico de alterações.")
+    if banco.usa_postgres():
+        st.success(f"Banco de dados: {banco.descricao()}. Os cadastros ficam guardados mesmo quando o app reinicia.")
+    else:
+        st.warning(f"Banco de dados: {banco.descricao()}. No Streamlit Cloud, usuários, valores e profissionais "
+                   "são apagados quando o app reinicia. Configure DATABASE_URL nos Secrets para guardar de vez.")
     aba_us, aba_ac, aba_log = st.tabs(["Usuários", "Acessos", "Histórico de alterações"])
     with aba_us:
         secao("Usuários cadastrados")
@@ -1108,7 +1112,7 @@ elif menu == "Acessos":
             st.info("O módulo de segurança não possui 'obter_relatorio_acessos'.")
     with aba_log:
         df_log = consultar(
-            "SELECT data_hora AS 'Data/hora', usuario AS 'Usuário', acao AS 'Ação', detalhe AS 'Detalhe' "
+            'SELECT data_hora AS "Data/hora", usuario AS "Usuário", acao AS "Ação", detalhe AS "Detalhe" '
             "FROM log_alteracoes ORDER BY id DESC LIMIT 500"
         )
         if df_log.empty:
