@@ -44,6 +44,7 @@ except ImportError:
     psycopg = None
 
 _pool = None
+_pool_chave = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -172,20 +173,77 @@ class Conexao:
         self._conn.rollback()
 
 
+def chave_configuracao():
+    """Identifica o banco configurado sem expor a senha (muda quando o DATABASE_URL muda)."""
+    import hashlib
+
+    url = _url()
+    return "sqlite" if not url else "pg-" + hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
 def _obter_pool():
-    global _pool
+    global _pool, _pool_chave
+    chave = chave_configuracao()
+    if _pool is not None and _pool_chave != chave:  # DATABASE_URL trocado nos Secrets
+        try:
+            _pool.close()
+        except Exception:
+            pass
+        _pool = None
     if _pool is None:
         if psycopg is None:
             raise RuntimeError("DATABASE_URL configurado, mas o pacote 'psycopg' não está instalado "
                                "(confira o requirements.txt).")
         from psycopg_pool import ConnectionPool
 
+        url = _url()
+        testar_conexao(url)  # mostra o motivo real se não conectar (o pool só diria "timeout")
         # prepare_threshold=None: compatível com o pooler do Supabase
-        _pool = ConnectionPool(_url(), min_size=1, max_size=5, max_idle=300, open=True,
+        _pool = ConnectionPool(url, min_size=1, max_size=5, max_idle=300, open=True, timeout=20,
                                check=ConnectionPool.check_connection,
                                kwargs={"prepare_threshold": None, "connect_timeout": 15})
+        _pool_chave = chave
         atexit.register(_pool.close)
     return _pool
+
+
+def _sem_senha(texto, url):
+    """Remove a senha de mensagens de erro antes de mostrá-las na tela."""
+    m = re.match(r"^[a-z]+://[^:/@]+:([^@]+)@", url or "")
+    if m and m.group(1):
+        texto = texto.replace(m.group(1), "***")
+        try:
+            from urllib.parse import unquote
+
+            texto = texto.replace(unquote(m.group(1)), "***")
+        except Exception:
+            pass
+    return texto
+
+
+def testar_conexao(url=None):
+    """Abre uma conexão de teste. Em caso de falha, levanta RuntimeError com o motivo em português."""
+    url = url or _url()
+    try:
+        with psycopg.connect(url, connect_timeout=15, prepare_threshold=None) as c:
+            c.execute("SELECT 1")
+    except Exception as e:
+        bruto = _sem_senha(f"{type(e).__name__}: {e}", url)
+        n = bruto.lower()
+        if "password authentication failed" in n or "authentication failed" in n:
+            dica = ("a senha do banco está incorreta. Confira a senha no DATABASE_URL "
+                    "(símbolos precisam do código, ex.: @ vira %40).")
+        elif "tenant or user not found" in n:
+            dica = "o usuário do banco no DATABASE_URL está errado (deve ser postgres.<id-do-projeto>)."
+        elif "could not translate host" in n or "name or service not known" in n:
+            dica = "o endereço do servidor no DATABASE_URL está errado."
+        elif "timeout" in n or "timed out" in n:
+            dica = "o servidor não respondeu a tempo (confira se usou o Session pooler, porta 5432)."
+        elif "invalid" in n and ("dsn" in n or "uri" in n or "connection" in n):
+            dica = "o DATABASE_URL está mal formatado."
+        else:
+            dica = "veja o detalhe abaixo."
+        raise RuntimeError(f"Não consegui conectar ao banco de dados: {dica}\nDetalhe técnico: {bruto}") from None
 
 
 @contextmanager

@@ -420,21 +420,23 @@ def indicadores_cadastro():
 
 
 @st.cache_resource(show_spinner=False)
-def _inicializar_bancos():
-    """Cria/migra os bancos uma única vez por servidor (antes rodava a cada clique,
-    recalculando o hash de senha de todos os usuários). Retorna a mensagem de erro, se houver."""
-    init_db()
+def _inicializar_bancos(chave_banco):
+    """Cria/migra os bancos uma única vez por servidor e por banco configurado (antes rodava
+    a cada clique). Se o DATABASE_URL mudar nos Secrets, roda de novo para o banco novo.
+    Retorna a mensagem de erro, se houver."""
     try:
+        init_db()
         motor_seguranca.init_db_seguranca()
     except Exception as e:
-        return f"Módulo de segurança não inicializou: {e}"
+        return str(e)
     return None
 
 
-_erro_init = _inicializar_bancos()
+_erro_init = _inicializar_bancos(banco.chave_configuracao())
 if _erro_init:
     _inicializar_bancos.clear()  # tenta de novo na próxima interação
-    st.warning(_erro_init)
+    st.error(_erro_init)
+    st.stop()
 
 # ─────────────────────────────────────────────────────────────
 # Tema / CSS
