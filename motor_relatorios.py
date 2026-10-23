@@ -522,7 +522,7 @@ def spec_glosas(df_glosas, df_completo=None, arquivos=None):
            "Doc Original": "Guia do prestador"}
     g = g.rename(columns=ren)
     cols = ["Data do atendimento", "Paciente", "Guia do prestador", "Protocolo", "Lote", "Código",
-            "Procedimento", "Quantidade", "Quantidade liberada", "Valor informado", "Valor pago",
+            "Procedimento", "Rede", "Quantidade", "Quantidade liberada", "Valor informado", "Valor pago",
             "Valor da glosa", "Status da glosa", "Motivo da glosa", "Data de pagamento", "Operadora"]
     cols = [c for c in cols if c in g.columns]
     g = g[cols].sort_values(["Operadora", "Data do atendimento"] if "Operadora" in cols else cols[:1]) \

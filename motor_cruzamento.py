@@ -400,6 +400,7 @@ def _agregar(d, chaves):
     spec = {
         "Nome do paciente": ("Nome do paciente", "first"),
         "Data do evento": ("Data do evento", "first"),
+        "Código": ("Código", _jn),
         "Valor informado": ("Valor informado", "sum"),
         "Valor pago": ("Valor pago", "sum"),
         "Valor da glosa": ("Valor da glosa", "sum"),
@@ -440,7 +441,7 @@ def cruzar_controle_demonstrativo(controle, demo, usar_quantidade=None):
     Retorna (cruzado, so_no_demonstrativo)."""
     colunas_saida = ["Data", "Paciente", "Plano", "Tempo", "Quantidade", "Qtd no demonstrativo",
                      "Valor informado", "Valor pago", "Valor da glosa", "Guia", "Lote", "Protocolo",
-                     "Motivo da glosa", "Data de pagamento", "Situação", "Critério de vínculo"]
+                     "Motivo da glosa", "Data de pagamento", "Situação", "Critério de vínculo", "Código"]
     colunas_so_demo = ["Data", "Paciente", "Guia", "Lote", "Valor informado", "Valor pago",
                        "Valor da glosa", "Motivo da glosa", "Data de pagamento"]
 
@@ -454,7 +455,7 @@ def cruzar_controle_demonstrativo(controle, demo, usar_quantidade=None):
             "Valor informado": float("nan"), "Valor pago": float("nan"), "Valor da glosa": float("nan"),
             "Guia": c["Guia"], "Lote": c["Lote"], "Protocolo": "", "Motivo da glosa": "",
             "Data de pagamento": "-", "Situação": "Sem demonstrativo para conferir",
-            "Critério de vínculo": "-",
+            "Critério de vínculo": "-", "Código": c["Código"] if "Código" in c.columns else "",
         })[colunas_saida]
         return out, pd.DataFrame(columns=colunas_so_demo)
 
@@ -503,7 +504,7 @@ def cruzar_controle_demonstrativo(controle, demo, usar_quantidade=None):
         v = vinculo.get(k)
         primeira = r["_ordem"] == 0
         base = {"Data": r["Data"], "Paciente": r["Paciente"], "Plano": r["Plano"], "Tempo": r["Tempo"],
-                "Quantidade": r["Quantidade"]}
+                "Quantidade": r["Quantidade"], "Código": r.get("Código", "")}
         if v is None:
             base.update({"Qtd no demonstrativo": 0.0, "Valor informado": 0.0, "Valor pago": 0.0,
                          "Valor da glosa": 0.0, "Guia": r["Guia"], "Lote": r["Lote"], "Protocolo": "",
@@ -527,7 +528,8 @@ def cruzar_controle_demonstrativo(controle, demo, usar_quantidade=None):
                          "Lote": gr["Lote"] or r["Lote"], "Protocolo": gr["Protocolo"],
                          "Motivo da glosa": gr["Motivo da glosa"],
                          "Data de pagamento": gr["Data de pagamento"], "Situação": sit,
-                         "Critério de vínculo": crit})
+                         "Critério de vínculo": crit,
+                         "Código": r.get("Código", "") or gr.get("Código", "")})
         registros.append(base)
 
     cruzado = pd.DataFrame(registros, columns=colunas_saida)
@@ -549,7 +551,7 @@ def _so_digitos(x):
     return re.sub(r"\D", "", str(x or ""))
 
 
-def _valor_tabela(tab, col, plano, tempo, cache, data=""):
+def _valor_tabela(tab, col, plano, tempo, cache, data="", codigo=""):
     """Procura em tab (colunas plano, tempo_atendimento, <col>, vigência opcional) o valor do
     plano/tempo válido na data do atendimento. Retorna float ou None (não encontrado ou ambíguo)."""
     if tab is None or tab.empty:
@@ -562,10 +564,20 @@ def _valor_tabela(tab, col, plano, tempo, cache, data=""):
             return None
     elif "vigencia_fim" in tab.columns:  # sem data: só o que está em vigor
         tab = tab[[not me.data_iso(f) for f in tab["vigencia_fim"]]]
-    chave = (_norm(plano), _so_digitos(tempo) or _norm(tempo), me.data_iso(data)[:10])
+    if col not in tab.columns:
+        return None
+    cod = _so_digitos(codigo)
+    if cod and "codigo_tuss" in tab.columns:  # procedimento com código: usa o valor do código, se cadastrado
+        por_cod = tab[tab["codigo_tuss"].map(lambda x: _so_digitos(me._id_txt(x)) == cod)]
+        if not por_cod.empty:
+            tab = por_cod
+    chave = (_norm(plano), _so_digitos(tempo) or _norm(tempo), me.data_iso(data)[:10], cod, col)
     if chave in cache:
         return cache[chave]
-    t = tab.copy()
+    t = tab[tab[col].notna()].copy()
+    if t.empty:
+        cache[chave] = None
+        return None
     t["_p"] = t["plano"].map(_norm)
     pn = chave[0]
     cand = t[t["_p"] == pn]
@@ -607,11 +619,19 @@ def montar_espelho_producao(cruzado, tab_faturamento=None, tab_repasse=None, des
     cf, cr = {}, {}
     unit, fonte, rep_unit = [], [], []
     datas = cruzado["Data"] if "Data" in cruzado.columns else [""] * len(cruzado)
-    for plano, tempo, data in zip(cruzado["Plano"], cruzado["Tempo"], datas):
-        u = _valor_tabela(tab_faturamento, "valor_plano", plano, tempo, cf, data)
+    codigos = cruzado["Código"] if "Código" in cruzado.columns else [""] * len(cruzado)
+    inf_unit = (pd.to_numeric(cruzado["Valor informado"], errors="coerce")
+                / pd.to_numeric(cruzado["Quantidade"], errors="coerce").where(lambda q: q > 0)).round(2).tolist()
+    for i, (plano, tempo, data, cod) in enumerate(zip(cruzado["Plano"], cruzado["Tempo"], datas, codigos)):
+        u = _valor_tabela(tab_faturamento, "valor_plano", plano, tempo, cf, data, cod)
+        rotulo = "Tabela de faturamento" if u is not None else ""
+        # paciente da Rede Flex: o demonstrativo informa o valor Flex cadastrado
+        f = _valor_tabela(tab_faturamento, "valor_flex", plano, tempo, cf, data, cod) if u is not None else None
+        if f and pd.notna(inf_unit[i]) and abs(inf_unit[i] - f) <= TOL:
+            u, rotulo = f, "Tabela de faturamento (Rede Flex)"
         unit.append(u)
-        fonte.append("Tabela de faturamento" if u is not None else "")
-        rep_unit.append(_valor_tabela(tab_repasse, "valor_profissional", plano, tempo, cr, data))
+        fonte.append(rotulo)
+        rep_unit.append(_valor_tabela(tab_repasse, "valor_profissional", plano, tempo, cr, data, cod))
 
     e = cruzado.copy().reset_index(drop=True)
     e["Valor unitário (plano)"] = unit

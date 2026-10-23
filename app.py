@@ -70,7 +70,7 @@ TIPOS = {
         "tabela": "tabela_valores_faturamento",
         "col": "valor_plano",
         "rotulo_valor": "Valor pago pelo plano",
-        "titulo": "Faturamento (valores do plano)",
+        "titulo": "Valores recebidos por plano",
         "modelo_col": "Valor do plano",
     },
     "repasse": {
@@ -152,6 +152,12 @@ def init_db():
             for nova in ("codigo_tuss", "vigencia_inicio", "vigencia_fim"):
                 if nova not in existentes:
                     conn.execute(f"ALTER TABLE {tb} ADD COLUMN {nova} TEXT")
+        # valores recebidos por plano: nome do procedimento e valor da Rede Flex
+        existentes = banco.colunas(conn, "tabela_valores_faturamento")
+        if "procedimento" not in existentes:
+            conn.execute("ALTER TABLE tabela_valores_faturamento ADD COLUMN procedimento TEXT")
+        if "valor_flex" not in existentes:
+            conn.execute("ALTER TABLE tabela_valores_faturamento ADD COLUMN valor_flex REAL")
         conn.commit()
 
         # Migração única: se as tabelas novas estão vazias, copia da tabela antiga.
@@ -255,8 +261,9 @@ def excluir_profissional(pid, nome):
 # ── Valores (faturamento / repasse) ──────────────────────────
 def valores_df(tipo, esp):
     cfg = TIPOS[tipo]
+    extra = ", procedimento, valor_flex" if tipo == "faturamento" else ""
     return consultar(
-        f"SELECT id, plano, codigo_tuss, tempo_atendimento, {cfg['col']}, vigencia_inicio, vigencia_fim "
+        f"SELECT id, plano, codigo_tuss, tempo_atendimento, {cfg['col']}{extra}, vigencia_inicio, vigencia_fim "
         f"FROM {cfg['tabela']} WHERE UPPER(especialidade) = UPPER(?) "
         "ORDER BY plano, COALESCE(codigo_tuss, ''), tempo_atendimento, COALESCE(vigencia_inicio, '')",
         (esp,),
@@ -347,14 +354,17 @@ def previa_reajuste(tipo, plano, esp, data_inicio, percentual):
     """Valores em vigor do plano (e especialidade) que serão reajustados a partir de data_inicio."""
     cfg = TIPOS[tipo]
     ini = _iso_ou_none(data_inicio)
+    extra = ", procedimento, valor_flex" if tipo == "faturamento" else ""
     df = consultar(
-        f"SELECT id, especialidade, codigo_tuss, tempo_atendimento, {cfg['col']} AS valor, vigencia_inicio, "
+        f"SELECT id, especialidade, codigo_tuss, tempo_atendimento, {cfg['col']} AS valor{extra}, vigencia_inicio, "
         f"vigencia_fim FROM {cfg['tabela']} WHERE plano = ?", (plano,))
     if esp != "Todas":
         df = df[df["especialidade"].str.upper() == esp.upper()]
     # em vigor no dia anterior ao reajuste e sem fim definido
     df = df[df["vigencia_fim"].isna() & (df["vigencia_inicio"].isna() | (df["vigencia_inicio"].astype(str) < ini))]
     df = df.assign(novo=(pd.to_numeric(df["valor"]) * (1 + percentual / 100)).round(2))
+    if "valor_flex" in df.columns:
+        df["novo_flex"] = (pd.to_numeric(df["valor_flex"], errors="coerce") * (1 + percentual / 100)).round(2)
     return df
 
 
@@ -365,33 +375,181 @@ def aplicar_reajuste(tipo, plano, previa, data_inicio, percentual):
     with conectar() as conn:
         conn.executemany(f"UPDATE {cfg['tabela']} SET vigencia_fim=? WHERE id=?",
                          [(fim_antigo, int(i)) for i in previa["id"]])
-        conn.executemany(
-            f"INSERT INTO {cfg['tabela']} (especialidade, plano, tempo_atendimento, {cfg['col']}, codigo_tuss, "
-            "vigencia_inicio, vigencia_fim) VALUES (?,?,?,?,?,?,?)",
-            [(r["especialidade"], plano, r["tempo_atendimento"] or "", float(r["novo"]), r["codigo_tuss"], ini, None)
-             for _, r in previa.iterrows()],
-        )
+        if tipo == "faturamento":
+            conn.executemany(
+                f"INSERT INTO {cfg['tabela']} (especialidade, plano, tempo_atendimento, valor_plano, valor_flex, "
+                "codigo_tuss, procedimento, vigencia_inicio, vigencia_fim) VALUES (?,?,?,?,?,?,?,?,?)",
+                [(r["especialidade"], plano, r["tempo_atendimento"] or "", float(r["novo"]),
+                  None if pd.isna(r.get("novo_flex")) else float(r["novo_flex"]), r["codigo_tuss"],
+                  r.get("procedimento"), ini, None) for _, r in previa.iterrows()],
+            )
+        else:
+            conn.executemany(
+                f"INSERT INTO {cfg['tabela']} (especialidade, plano, tempo_atendimento, {cfg['col']}, codigo_tuss, "
+                "vigencia_inicio, vigencia_fim) VALUES (?,?,?,?,?,?,?)",
+                [(r["especialidade"], plano, r["tempo_atendimento"] or "", float(r["novo"]), r["codigo_tuss"], ini, None)
+                 for _, r in previa.iterrows()],
+            )
         conn.commit()
     registrar_log(f"Reajuste ({tipo})", f"{plano} | {len(previa)} valor(es) | {percentual:+.2f}% a partir de {_br(ini)}")
     return len(previa)
 
 
-def importar_sugestao(plano, sugestao, substituir):
-    """Grava na tabela de faturamento os valores sugeridos (por código, com vigência)."""
+def _num_ou_none(v):
+    try:
+        f = float(v)
+        return None if pd.isna(f) else f
+    except (TypeError, ValueError):
+        return _para_float(v)
+
+
+def _esp_do_procedimento(esp, procedimento):
+    esp = str(esp or "").strip().upper()
+    if esp and esp not in ("NAN", "NONE"):
+        return esp
+    return (motor_extracao.especialidade_do_procedimento(procedimento) or "OUTROS").upper()
+
+
+def gravar_valores_plano(plano, linhas, substituir_codigos):
+    """Grava valores recebidos por plano. linhas: dicts com codigo, procedimento, nacional, flex, inicio, fim,
+    especialidade. substituir_codigos=True apaga antes os valores desses códigos no plano."""
     tb = TIPOS["faturamento"]["tabela"]
-    codigos = sorted(set(sugestao["Código"].astype(str)))
+    linhas = [l for l in linhas if _num_ou_none(l.get("nacional")) is not None]
+    codigos = sorted({str(l["codigo"]).strip() for l in linhas if str(l.get("codigo") or "").strip()})
     with conectar() as conn:
-        if substituir and codigos:
+        if substituir_codigos and codigos:
             conn.executemany(f"DELETE FROM {tb} WHERE plano = ? AND codigo_tuss = ?", [(plano, c) for c in codigos])
         conn.executemany(
-            f"INSERT INTO {tb} (especialidade, plano, tempo_atendimento, valor_plano, codigo_tuss, vigencia_inicio, "
-            "vigencia_fim) VALUES (?,?,?,?,?,?,?)",
-            [((r["Especialidade"] or "OUTROS").upper(), plano, "", float(r["Valor"]), str(r["Código"]),
-              _iso_ou_none(r["Início"]), _iso_ou_none(r["Fim"])) for _, r in sugestao.iterrows()],
+            f"INSERT INTO {tb} (especialidade, plano, tempo_atendimento, valor_plano, valor_flex, codigo_tuss, "
+            "procedimento, vigencia_inicio, vigencia_fim) VALUES (?,?,?,?,?,?,?,?,?)",
+            [(_esp_do_procedimento(l.get("especialidade"), l.get("procedimento")), plano, "",
+              _num_ou_none(l["nacional"]), _num_ou_none(l.get("flex")),
+              str(l.get("codigo") or "").strip() or None, str(l.get("procedimento") or "").strip() or None,
+              _iso_ou_none(l.get("inicio")), _iso_ou_none(l.get("fim"))) for l in linhas],
         )
         conn.commit()
-    registrar_log("Valores importados do histórico", f"{plano} | {len(sugestao)} valor(es) | {len(codigos)} código(s)")
-    return len(sugestao)
+    return len(linhas), len(codigos)
+
+
+def importar_sugestao(plano, sugestao, substituir):
+    """Grava na tabela de valores recebidos os valores sugeridos pelos demonstrativos."""
+    linhas = [dict(codigo=r["Código"], procedimento=r["Procedimento"], nacional=r["Valor Rede Nacional"],
+                   flex=r["Valor Rede Flex"], inicio=r["Início"], fim=r["Fim"], especialidade=r["Especialidade"])
+              for _, r in sugestao.iterrows()]
+    n, ncod = gravar_valores_plano(plano, linhas, substituir)
+    registrar_log("Valores importados do histórico", f"{plano} | {n} valor(es) | {ncod} código(s)")
+    return n
+
+
+def valores_plano_df(plano):
+    return consultar(
+        "SELECT id, codigo_tuss, procedimento, valor_plano, valor_flex, vigencia_inicio, vigencia_fim, especialidade "
+        "FROM tabela_valores_faturamento WHERE plano = ? "
+        "ORDER BY COALESCE(codigo_tuss, ''), COALESCE(vigencia_inicio, '')", (plano,))
+
+
+def salvar_valores_plano(plano, original, editado):
+    ed = editado.copy()
+    ed["codigo_tuss"] = ed["codigo_tuss"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    ed["procedimento"] = ed["procedimento"].fillna("").astype(str).str.strip()
+    ed["valor_plano"] = pd.to_numeric(ed["valor_plano"], errors="coerce")
+    ed["valor_flex"] = pd.to_numeric(ed["valor_flex"], errors="coerce")
+    for c in ("vigencia_inicio", "vigencia_fim"):
+        ed[c] = ed[c].map(_iso_ou_none)
+    ed["especialidade"] = [_esp_do_procedimento(e, p) for e, p in zip(ed["especialidade"], ed["procedimento"])]
+    if ed["valor_plano"].isna().any():
+        return False, f"{int(ed['valor_plano'].isna().sum())} linha(s) sem o valor da Rede Nacional."
+    if (ed["codigo_tuss"].eq("") & ed["procedimento"].eq("")).any():
+        return False, "Informe o código ou o nome do procedimento em todas as linhas."
+    trocadas = ed["vigencia_inicio"].notna() & ed["vigencia_fim"].notna() & \
+        (ed["vigencia_fim"].astype(str) < ed["vigencia_inicio"].astype(str))
+    if trocadas.any():
+        return False, f"{int(trocadas.sum())} linha(s) com o fim da vigência antes do início."
+    mantidos, novos = ed[ed["id"].notna()], ed[ed["id"].isna()]
+    removidos = set(original["id"].astype(int)) - set(mantidos["id"].astype(int))
+    nn = lambda v: None if pd.isna(v) else float(v)
+    with conectar() as conn:
+        tb = TIPOS["faturamento"]["tabela"]
+        conn.executemany(f"DELETE FROM {tb} WHERE id=?", [(i,) for i in removidos])
+        conn.executemany(
+            f"UPDATE {tb} SET codigo_tuss=?, procedimento=?, valor_plano=?, valor_flex=?, vigencia_inicio=?, "
+            "vigencia_fim=?, especialidade=? WHERE id=?",
+            [(r["codigo_tuss"] or None, r["procedimento"] or None, float(r["valor_plano"]), nn(r["valor_flex"]),
+              r["vigencia_inicio"], r["vigencia_fim"], r["especialidade"], int(r["id"])) for _, r in mantidos.iterrows()],
+        )
+        conn.executemany(
+            f"INSERT INTO {tb} (especialidade, plano, tempo_atendimento, valor_plano, valor_flex, codigo_tuss, "
+            "procedimento, vigencia_inicio, vigencia_fim) VALUES (?,?,?,?,?,?,?,?,?)",
+            [(r["especialidade"], plano, "", float(r["valor_plano"]), nn(r["valor_flex"]), r["codigo_tuss"] or None,
+              r["procedimento"] or None, r["vigencia_inicio"], r["vigencia_fim"]) for _, r in novos.iterrows()],
+        )
+        conn.commit()
+    registrar_log("Valores recebidos editados", f"{plano} | {len(novos)} nova(s), {len(removidos)} removida(s)")
+    return True, f"Alterações salvas: {len(novos)} nova(s), {len(removidos)} removida(s)."
+
+
+_COLS_PLANILHA_FAT = {
+    "plano": ("PLANO", "OPERADORA", "CONVENIO"),
+    "codigo": ("CODIGO", "COD", "TUSS"),
+    "procedimento": ("NOME", "PROCEDIMENTO", "DESCRICAO"),
+    "nacional": ("NACIONAL",),
+    "flex": ("FLEX",),
+    "inicio": ("INICIO", "DE "),
+    "fim": ("FIM", "ATE"),
+    "especialidade": ("ESPECIALIDADE",),
+}
+
+
+def ler_planilha_valores_plano(arquivo, plano_padrao):
+    """Planilha de valores recebidos: Código; Nome do procedimento; Valor Rede Nacional; Valor Rede Flex;
+    Vigência início; Vigência fim (opcionais: Plano, Especialidade). Lê todas as abas.
+    Retorna ({plano: [linhas]}, [avisos])."""
+    try:
+        arquivo.seek(0)
+        abas = pd.read_excel(io.BytesIO(arquivo.read()), sheet_name=None, header=None, dtype=object)
+    except Exception as e:
+        return {}, [f"Não foi possível abrir o Excel: {e}"]
+    por_plano, avisos = {}, []
+    for nome_aba, raw in abas.items():
+        raw = raw.dropna(how="all").dropna(axis=1, how="all")
+        cab_i, mapa = None, {}
+        for i in range(min(len(raw), 15)):
+            textos = [motor_extracao._norm(motor_extracao._txt(v)) for v in raw.iloc[i].tolist()]
+            m = {}
+            for campo, chaves in _COLS_PLANILHA_FAT.items():
+                for j, t in enumerate(textos):
+                    if j not in m.values() and t and any(t.startswith(k.strip()) or f" {k.strip()}" in f" {t}"
+                                                          for k in chaves):
+                        m[campo] = j
+                        break
+            if "nacional" in m and ("codigo" in m or "procedimento" in m):
+                cab_i, mapa = i, m
+                break
+        if cab_i is None:
+            avisos.append(f"Aba {nome_aba}: não encontrei as colunas Código / Nome / Valor Rede Nacional.")
+            continue
+        for _, r in raw.iloc[cab_i + 1:].iterrows():
+            v = lambda c: r.iloc[mapa[c]] if c in mapa else None
+            nac = _para_float(v("nacional"))
+            if nac is None:
+                continue
+            plano = _limpa_plano(v("plano")) or plano_padrao
+            if not plano:
+                avisos.append(f"Aba {nome_aba}: linha sem plano ignorada.")
+                continue
+            por_plano.setdefault(plano, []).append(dict(
+                codigo=motor_extracao._id_txt(v("codigo")), procedimento=motor_extracao._txt(v("procedimento")),
+                nacional=nac, flex=_para_float(v("flex")), inicio=v("inicio"), fim=v("fim"),
+                especialidade=motor_extracao._txt(v("especialidade"))))
+    return por_plano, avisos
+
+
+def gerar_modelo_valores_plano():
+    buf = io.BytesIO()
+    pd.DataFrame(columns=["Código do procedimento", "Nome do procedimento", "Valor Rede Nacional", "Valor Rede Flex",
+                          "Vigência início", "Vigência fim", "Especialidade"]).to_excel(
+        buf, sheet_name="Valores", index=False)
+    return buf.getvalue()
 
 
 # ── Importação de planilhas ──────────────────────────────────
@@ -751,15 +909,229 @@ ESPECIALIDADES_SUGESTAO = ESPECIALIDADES + ["FONOAUDIOLOGIA", "PSIQUIATRIA", "NE
                                             "MULTIPROFISSIONAL", "OUTROS"]
 
 
+def secao_faturamento():
+    """Valores recebidos por plano: Código; Nome do procedimento; Valor Rede Nacional; Valor Rede Flex; vigência."""
+    planos_lista = [p for p in PLANOS_SAUDE if p not in ("Identificar pelo arquivo", "Outros")]
+    planos_tb = planos_cadastrados("faturamento")
+    sub = st.tabs(["Tabela por plano", "Cadastrar valor", "Reajuste", "Importar planilha",
+                   "Sugerir pelos demonstrativos"])
+
+    # 1) Tabela editável de um plano
+    with sub[0]:
+        st.caption("Valores que o plano paga à clínica por procedimento. **Rede Flex** é o valor pago para pacientes "
+                   "do produto Flex do plano (no Bradesco, 80% da Rede Nacional). **Vigência** pela data do "
+                   "atendimento: início vazio = desde sempre; fim vazio = valor em vigor.")
+        if not planos_tb:
+            st.info("Nenhum valor cadastrado ainda. Use **Sugerir pelos demonstrativos**, **Importar planilha** ou "
+                    "**Cadastrar valor**.")
+        else:
+            plano = st.selectbox("Plano", planos_tb, key="fat_plano_tab")
+            ver_key = f"ver_fat_{plano}"
+            ver = st.session_state.setdefault(ver_key, 0)
+            original = valores_plano_df(plano)
+            exib = original.copy()
+            for c in ("vigencia_inicio", "vigencia_fim"):
+                exib[c] = pd.to_datetime(exib[c], errors="coerce").dt.date
+            st.caption(f"{len(original)} valor(es) em {plano}.")
+            editado = st.data_editor(
+                exib, key=f"ed_fat_{plano}_{ver}", num_rows="dynamic", hide_index=True, disabled=["id"],
+                column_order=["codigo_tuss", "procedimento", "valor_plano", "valor_flex", "vigencia_inicio",
+                              "vigencia_fim", "especialidade"],
+                column_config={
+                    "id": None,
+                    "codigo_tuss": st.column_config.TextColumn("Código do procedimento"),
+                    "procedimento": st.column_config.TextColumn("Nome do procedimento", width="large"),
+                    "valor_plano": st.column_config.NumberColumn("Valor Rede Nacional", format="R$ %.2f",
+                                                                 min_value=0.0, required=True),
+                    "valor_flex": st.column_config.NumberColumn("Valor Rede Flex", format="R$ %.2f", min_value=0.0),
+                    "vigencia_inicio": st.column_config.DateColumn("Vigência: início", format="DD/MM/YYYY"),
+                    "vigencia_fim": st.column_config.DateColumn("Vigência: fim", format="DD/MM/YYYY"),
+                    "especialidade": st.column_config.SelectboxColumn(
+                        "Especialidade", options=ESPECIALIDADES_SUGESTAO,
+                        help="Usada no relatório de produção. Vazio = identificada pelo nome do procedimento."),
+                },
+                **FULL_ED,
+            )
+            b1, b2 = st.columns(2)
+            if b1.button("Salvar alterações", type="primary", key=f"salvar_fat_{plano}", **FULL_BTN):
+                ok, msg = salvar_valores_plano(plano, original, editado)
+                if ok:
+                    st.session_state[ver_key] = ver + 1
+                    avisar("success", msg + " Reprocesse os demonstrativos para recalcular as glosas.")
+                    st.rerun()
+                else:
+                    st.error(msg)
+            with b2:
+                saida = original.rename(columns={
+                    "codigo_tuss": "Código do procedimento", "procedimento": "Nome do procedimento",
+                    "valor_plano": "Valor Rede Nacional", "valor_flex": "Valor Rede Flex",
+                    "vigencia_inicio": "Vigência início", "vigencia_fim": "Vigência fim",
+                    "especialidade": "Especialidade"}).drop(columns=["id"])
+                baixar(saida, f"valores_{motor_extracao._norm(plano).lower().replace(' ', '_')}", key=f"dl_fat_{plano}")
+
+    # 2) Cadastro manual
+    with sub[1]:
+        with st.form("form_valor_fat", clear_on_submit=True):
+            f1, f2, f3 = st.columns([2, 1.2, 3])
+            plano_n = f1.selectbox("Plano", sorted(set(planos_lista + planos_tb)))
+            codigo = f2.text_input("Código do procedimento", placeholder="Ex.: 50000470")
+            nome = f3.text_input("Nome do procedimento", placeholder="Ex.: Sessão de psicoterapia individual")
+            f4, f5, f6, f7 = st.columns(4)
+            nac = f4.number_input("Valor Rede Nacional (R$)", min_value=0.0, step=1.0, format="%.2f")
+            flex = f5.number_input("Valor Rede Flex (R$)", min_value=0.0, step=1.0, format="%.2f",
+                                   help="Deixe 0 se o procedimento não tem valor Flex.")
+            with f6:
+                inicio = _data_opcional("Vigência: início", "fat_vig_ini")
+            with f7:
+                fim = _data_opcional("Vigência: fim", "fat_vig_fim")
+            enviar = st.form_submit_button("Cadastrar valor", **FULL_FORM_BTN)
+        if enviar:
+            ini_iso, fim_iso = _iso_ou_none(inicio), _iso_ou_none(fim)
+            if nac <= 0:
+                st.error("Informe o valor da Rede Nacional.")
+            elif not codigo.strip() and not nome.strip():
+                st.error("Informe o código ou o nome do procedimento.")
+            elif ini_iso and fim_iso and fim_iso < ini_iso:
+                st.error("O fim da vigência não pode ser antes do início.")
+            else:
+                gravar_valores_plano(plano_n, [dict(codigo=codigo, procedimento=nome, nacional=nac,
+                                                    flex=flex or None, inicio=inicio, fim=fim)], False)
+                registrar_log("Valor recebido cadastrado", f"{plano_n} | {codigo} {nome} | {brl(nac)} / {brl(flex)}")
+                avisar("success", f"Valor cadastrado em {plano_n}: {codigo or nome} · Nacional {brl(nac)}"
+                                  + (f" · Flex {brl(flex)}" if flex else ""))
+                st.rerun()
+
+    # 3) Reajuste
+    with sub[2]:
+        st.markdown("Aplica um reajuste a partir de uma data, na Rede Nacional e na Rede Flex: os valores atuais "
+                    "recebem **fim de vigência** no dia anterior e os novos começam na data escolhida.")
+        if not planos_tb:
+            st.info("Ainda não há valores cadastrados para reajustar.")
+        else:
+            r1, r2, r3 = st.columns([2, 1.3, 1])
+            plano_r = r1.selectbox("Plano", planos_tb, key="reaj_plano_fat")
+            with r2:
+                data_r = _data_opcional("Novo valor a partir de", "reaj_data_fat")
+            pct = r3.number_input("Reajuste (%)", value=0.0, step=0.5, format="%.2f", key="reaj_pct_fat")
+            if data_r and pct:
+                prev = previa_reajuste("faturamento", plano_r, "Todas", data_r, pct)
+                if prev.empty:
+                    st.warning("Nenhum valor em vigor nesse plano antes dessa data.")
+                else:
+                    tabela(prev.rename(columns={
+                        "codigo_tuss": "Código", "procedimento": "Procedimento", "valor": "Nacional atual",
+                        "novo": "Nacional novo", "valor_flex": "Flex atual", "novo_flex": "Flex novo"})[
+                        ["Código", "Procedimento", "Nacional atual", "Nacional novo", "Flex atual", "Flex novo"]],
+                        column_config={c: st.column_config.NumberColumn(c, format="R$ %.2f") for c in
+                                       ("Nacional atual", "Nacional novo", "Flex atual", "Flex novo")})
+                    if st.button(f"Aplicar reajuste em {len(prev)} valor(es)", type="primary", key="reaj_ok_fat"):
+                        n = aplicar_reajuste("faturamento", plano_r, prev, data_r, pct)
+                        st.session_state[f"ver_fat_{plano_r}"] = st.session_state.get(f"ver_fat_{plano_r}", 0) + 1
+                        avisar("success", f"Reajuste aplicado em {n} valor(es) a partir de {data_r:%d/%m/%Y}. "
+                                          "Reprocesse os demonstrativos para recalcular.")
+                        st.rerun()
+            else:
+                st.caption("Escolha a data e o percentual para ver a prévia.")
+
+    # 4) Importação por planilha
+    with sub[3]:
+        st.markdown("Colunas: **Código do procedimento; Nome do procedimento; Valor Rede Nacional; Valor Rede Flex; "
+                    "Vigência início; Vigência fim** (Especialidade e Plano são opcionais). Todas as abas são lidas.")
+        st.download_button("Baixar modelo de planilha", gerar_modelo_valores_plano(), file_name="modelo_valores.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="modelo_fat")
+        i1, i2 = st.columns([2, 2])
+        plano_i = i1.selectbox("Plano (quando a planilha não tem a coluna Plano)",
+                               sorted(set(planos_lista + planos_tb)), key="imp_plano_fat")
+        subst = i2.checkbox("Substituir os valores já cadastrados dos códigos presentes na planilha", value=True,
+                            key="imp_subst_fat")
+        arquivo = st.file_uploader("Planilha (xlsx)", type=["xlsx", "xls"], key="up_fat")
+        if arquivo:
+            dados, avisos = ler_planilha_valores_plano(arquivo, plano_i)
+            for a in avisos:
+                st.warning(a)
+            if dados:
+                tabela(pd.DataFrame([{"Plano": p, "Valores": len(l), "Códigos": len({x["codigo"] for x in l})}
+                                     for p, l in dados.items()]))
+                if st.button("Confirmar importação", type="primary", key="conf_fat"):
+                    total = 0
+                    for p, linhas in dados.items():
+                        n, _ = gravar_valores_plano(p, linhas, subst)
+                        total += n
+                        st.session_state[f"ver_fat_{p}"] = st.session_state.get(f"ver_fat_{p}", 0) + 1
+                    registrar_log("Importação de valores recebidos", f"{total} valor(es) | {', '.join(dados)}")
+                    avisar("success", f"Importação concluída: {total} valor(es). Reprocesse os demonstrativos "
+                                      "para recalcular as glosas.")
+                    st.rerun()
+
+    # 5) Sugestão a partir dos demonstrativos processados
+    with sub[4]:
+        st.markdown(
+            "O sistema olha os demonstrativos já processados e sugere, para cada **código de procedimento**, o valor "
+            "da **Rede Nacional** e da **Rede Flex** em cada período, com os **reajustes** encontrados (pela data do "
+            "atendimento). Usa só atendimentos pagos por inteiro. **Confira com o contrato** antes de cadastrar."
+        )
+        ops = motor_historico.operadoras()
+        if not ops:
+            st.info("Processe um demonstrativo na **Casa das Máquinas** para receber sugestões.")
+            return
+        s1, s2 = st.columns(2)
+        op = s1.selectbox("Operadora", ops, key="sug_op")
+        plano_dest = s2.selectbox("Cadastrar no plano", sorted(set([op] + planos_tb)), key="sug_plano",
+                                  help="Use o mesmo nome da operadora para o sistema ligar os valores ao demonstrativo.")
+        chave_sug = f"sug_{op}"
+        if st.button("Analisar demonstrativos", key="sug_analisar", **FULL_BTN):
+            with st.spinner("Analisando os valores pagos..."):
+                itens = motor_historico.carregar_itens(operadoras_sel=[op])
+                st.session_state[chave_sug] = motor_conhecimento.sugerir_valores(itens)
+        sug = st.session_state.get(chave_sug)
+        if sug is None:
+            return
+        if sug.empty:
+            st.warning("Não encontrei atendimentos pagos por inteiro suficientes para sugerir valores.")
+            return
+        sug = sug.copy()
+        sug.insert(0, "Cadastrar", sug["Conferir"].eq(""))
+        st.caption(f"{len(sug)} valor(es) para {sug['Código'].nunique()} código(s). Linhas com observação em "
+                   "**Conferir** vêm desmarcadas (podem ser pagamentos em partes). Edite o que precisar antes de cadastrar.")
+        ed = st.data_editor(
+            sug, key=f"sug_ed_{op}", hide_index=True,
+            disabled=["Código", "Atendimentos", "Conferir", "Observação", "% Flex"],
+            column_order=["Cadastrar", "Código", "Procedimento", "Valor Rede Nacional", "Valor Rede Flex", "% Flex",
+                          "Início", "Fim", "Especialidade", "Atendimentos", "Conferir", "Observação"],
+            column_config={
+                "Cadastrar": st.column_config.CheckboxColumn("Cadastrar"),
+                "Procedimento": st.column_config.TextColumn("Nome do procedimento", width="large"),
+                "Especialidade": st.column_config.SelectboxColumn("Especialidade", options=ESPECIALIDADES_SUGESTAO),
+                "Valor Rede Nacional": st.column_config.NumberColumn("Valor Rede Nacional", format="R$ %.2f", min_value=0.0),
+                "Valor Rede Flex": st.column_config.NumberColumn("Valor Rede Flex", format="R$ %.2f", min_value=0.0),
+                "% Flex": st.column_config.NumberColumn("% Flex", format="%.1f%%"),
+                "Início": st.column_config.DateColumn("Vigência: início", format="DD/MM/YYYY"),
+                "Fim": st.column_config.DateColumn("Vigência: fim", format="DD/MM/YYYY"),
+                "Atendimentos": st.column_config.NumberColumn("Atendimentos", format="%d"),
+            },
+            **FULL_ED,
+        )
+        marcados = ed[ed["Cadastrar"]]
+        substituir = st.checkbox("Substituir os valores já cadastrados nesse plano para os códigos marcados", value=True,
+                                 key="sug_subst")
+        if st.button(f"Cadastrar {len(marcados)} valor(es) marcados", type="primary", key="sug_cadastrar",
+                     disabled=marcados.empty):
+            n = importar_sugestao(plano_dest, marcados, substituir)
+            st.session_state.pop(chave_sug, None)
+            st.session_state[f"ver_fat_{plano_dest}"] = st.session_state.get(f"ver_fat_{plano_dest}", 0) + 1
+            avisar("success", f"{n} valor(es) cadastrados em {plano_dest}. Reprocesse os demonstrativos na Casa das "
+                              "Máquinas para recalcular as glosas.")
+            st.rerun()
+
+
 def secao_valores(tipo):
+    if tipo == "faturamento":
+        return secao_faturamento()
     cfg = TIPOS[tipo]
     col = cfg["col"]
     especs = especialidades_disponiveis()
 
-    nomes_sub = ["Tabelas por especialidade", "Cadastrar valor", "Reajuste", "Importar planilha"]
-    if tipo == "faturamento":
-        nomes_sub.append("Sugerir pelos demonstrativos")
-    sub = st.tabs(nomes_sub)
+    sub = st.tabs(["Tabelas por especialidade", "Cadastrar valor", "Reajuste", "Importar planilha"])
 
     # 1) Uma tabela editável por especialidade
     with sub[0]:
@@ -914,67 +1286,6 @@ def secao_valores(tipo):
                         st.session_state[k] += 1
                 avisar("success", f"Importação concluída: {total} registros em {len(dados)} especialidade(s).")
                 st.rerun()
-
-    # 5) Sugestão a partir dos demonstrativos processados
-    if tipo == "faturamento":
-        with sub[4]:
-            st.markdown(
-                "O sistema olha os demonstrativos já processados e sugere o valor de cada **código de procedimento**, "
-                "com os **reajustes** que encontrou (pela data do atendimento). Usa só atendimentos pagos por inteiro. "
-                "**Confira com o contrato** antes de cadastrar: o que o plano pagou nem sempre é o valor contratado."
-            )
-            ops = motor_historico.operadoras()
-            if not ops:
-                st.info("Processe um demonstrativo na **Casa das Máquinas** para receber sugestões.")
-            else:
-                s1, s2 = st.columns([2, 2])
-                op = s1.selectbox("Operadora", ops, key="sug_op")
-                plano_dest = s2.selectbox("Cadastrar no plano", sorted(set([op] + planos_cadastrados("faturamento"))),
-                                          key="sug_plano",
-                                          help="Nome do plano na tabela de valores. Use o mesmo nome da operadora.")
-                chave_sug = f"sug_{op}"
-                if st.button("Analisar demonstrativos", key="sug_analisar", **FULL_BTN):
-                    with st.spinner("Analisando os valores pagos..."):
-                        itens = motor_historico.carregar_itens(operadoras_sel=[op])
-                        st.session_state[chave_sug] = motor_conhecimento.sugerir_valores(itens)
-                sug = st.session_state.get(chave_sug)
-                if sug is not None:
-                    if sug.empty:
-                        st.warning("Não encontrei atendimentos pagos por inteiro suficientes para sugerir valores.")
-                    else:
-                        sug = sug.copy()
-                        sug.insert(0, "Cadastrar", sug["Conferir"].eq(""))
-                        st.caption(f"{len(sug)} valor(es) sugerido(s) para {sug['Código'].nunique()} código(s). "
-                                   "Linhas com observação em **Conferir** vêm desmarcadas: podem ser pagamentos em "
-                                   "partes. Você pode editar valor, especialidade e datas antes de cadastrar.")
-                        ed = st.data_editor(
-                            sug, key=f"sug_ed_{op}", hide_index=True,
-                            disabled=["Código", "Procedimento", "Atendimentos", "Conferir"],
-                            column_config={
-                                "Cadastrar": st.column_config.CheckboxColumn("Cadastrar"),
-                                "Especialidade": st.column_config.SelectboxColumn(
-                                    "Especialidade", options=ESPECIALIDADES_SUGESTAO),
-                                "Valor": st.column_config.NumberColumn("Valor", format="R$ %.2f", min_value=0.0),
-                                "Início": st.column_config.DateColumn("Vigência: início", format="DD/MM/YYYY"),
-                                "Fim": st.column_config.DateColumn("Vigência: fim", format="DD/MM/YYYY"),
-                                "Atendimentos": st.column_config.NumberColumn("Atendimentos", format="%d"),
-                            },
-                            **FULL_ED,
-                        )
-                        marcados = ed[ed["Cadastrar"]]
-                        substituir = st.checkbox(
-                            "Substituir os valores já cadastrados nesse plano para os códigos marcados", value=True,
-                            key="sug_subst")
-                        if st.button(f"Cadastrar {len(marcados)} valor(es) marcados", type="primary",
-                                     key="sug_cadastrar", disabled=marcados.empty):
-                            n = importar_sugestao(plano_dest, marcados, substituir)
-                            st.session_state.pop(chave_sug, None)
-                            for k in list(st.session_state.keys()):
-                                if k.startswith("ver_faturamento_"):
-                                    st.session_state[k] += 1
-                            avisar("success", f"{n} valor(es) cadastrados em {plano_dest}. Reprocesse os "
-                                              "demonstrativos na Casa das Máquinas para recalcular as glosas.")
-                            st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1406,7 +1717,7 @@ elif menu == "Faturamento x Recebimento":
 elif menu == "Valores":
     cabecalho(
         "Tabelas de valores",
-        "Faturamento (o que o plano paga à clínica) e repasse (o que o profissional recebe), uma tabela por especialidade.",
+        "Valores recebidos de cada plano (Rede Nacional e Rede Flex) e repasse ao profissional, com vigência.",
     )
     aba_fat, aba_rep = st.tabs([TIPOS["faturamento"]["titulo"], TIPOS["repasse"]["titulo"]])
     with aba_fat:

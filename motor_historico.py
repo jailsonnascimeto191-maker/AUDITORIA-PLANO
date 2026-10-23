@@ -40,6 +40,7 @@ COLUNAS = {
     "Fonte do valor informado": "fonte_valor",
     "Diferença sem justificativa": "diferenca",
     "Alertas": "alertas",
+    "Rede": "rede",
 }
 NUMERICAS = {"valor_informado", "valor_pago", "valor_glosa", "quantidade", "valor_unitario",
              "quantidade_liberada", "valor_referencia", "diferenca"}

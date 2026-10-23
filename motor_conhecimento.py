@@ -73,7 +73,8 @@ def carregar():
                 con["codigos_glosa"][cod] = desc
             cols = banco.colunas(conn, "tabela_valores_faturamento")
             if cols:
-                extra = "".join(f", {c}" for c in ("codigo_tuss", "vigencia_inicio", "vigencia_fim") if c in cols)
+                extra = "".join(f", {c}" for c in ("codigo_tuss", "vigencia_inicio", "vigencia_fim", "valor_flex",
+                                                   "procedimento") if c in cols)
                 con["tabela_valores"] = banco.ler_df(
                     conn, f"SELECT especialidade, plano, tempo_atendimento, valor_plano{extra} "
                           "FROM tabela_valores_faturamento")
@@ -170,14 +171,16 @@ def mapa_para_tabela(leitura):
 # Sugestão da tabela de valores a partir dos demonstrativos (com reajustes)
 # --------------------------------------------------------------------------
 def sugerir_valores(itens, minimo_mes=5):
-    """A partir dos itens do histórico de UMA operadora, sugere o valor de cada código de procedimento e
-    os períodos de vigência (reajustes), pela data do atendimento.
+    """A partir dos itens do histórico de UMA operadora, sugere para cada código de procedimento o valor
+    da Rede Nacional e da Rede Flex e os períodos de vigência (reajustes), pela data do atendimento.
 
-    Usa só itens pagos por inteiro (sem glosa, sem justificativa, quantidade toda liberada). Para cada
-    código e mês do atendimento, pega o valor unitário mais frequente; meses seguidos com o mesmo valor
-    formam um período. Retorna DataFrame com: Código, Procedimento, Especialidade, Valor, Início, Fim,
-    Atendimentos."""
-    cols = ["Código", "Procedimento", "Especialidade", "Valor", "Início", "Fim", "Atendimentos", "Conferir"]
+    Usa só itens pagos por inteiro (sem glosa, sem justificativa, quantidade toda liberada). Em cada mês,
+    o valor Nacional é o mais frequente e o Flex é o valor que fica em torno de 80% dele (quando existe).
+    Meses seguidos com o mesmo valor Nacional formam um período.
+    Retorna DataFrame com: Código, Procedimento, Especialidade, Valor Rede Nacional, Valor Rede Flex,
+    Início, Fim, Atendimentos, Conferir."""
+    cols = ["Código", "Procedimento", "Especialidade", "Valor Rede Nacional", "Valor Rede Flex", "% Flex",
+            "Início", "Fim", "Atendimentos", "Conferir", "Observação"]
     if itens is None or itens.empty:
         return pd.DataFrame(columns=cols)
     d = itens.copy()
@@ -194,6 +197,8 @@ def sugerir_valores(itens, minimo_mes=5):
     iso = d["_iso"] if "_iso" in d.columns else d["Data do evento"].map(me.data_iso)
     d["_mes"] = iso.fillna("").astype(str).str[:7]
     d = d[d["_mes"].str.len() == 7]
+    eh_flex = lambda f, n: n > 0 and 0.79 <= f / n <= 0.81
+    igual = lambda a, b: abs(a - b) <= 0.011
 
     linhas = []
     for cod, g in d.groupby("Código"):
@@ -201,25 +206,34 @@ def sugerir_valores(itens, minimo_mes=5):
         meses = []
         for mes, gm in g.groupby("_mes", sort=True):
             cont = gm["_unit"].value_counts()
-            if cont.iloc[0] < minimo_mes or cont.iloc[0] < 0.5 * len(gm):
+            nac = float(cont.index[0])
+            # mês em que a maioria é Flex: o Nacional é o valor ~25% acima
+            for v in cont.index[1:4]:
+                if eh_flex(nac, float(v)):
+                    nac = float(v)
+                    break
+            flex = next((float(v) for v in cont.index if eh_flex(float(v), nac) and cont[v] >= 2), None)
+            n_nac = int(sum(c for v, c in cont.items() if igual(v, nac)))
+            n_flex = int(sum(c for v, c in cont.items() if flex and igual(v, flex)))
+            if n_nac < minimo_mes or (n_nac + n_flex) < 0.5 * len(gm):
                 continue  # mês com poucos atendimentos ou valores misturados: não decide nada
-            meses.append((mes, float(cont.index[0]), len(gm)))
+            meses.append((mes, nac, flex, n_nac + n_flex))
         if not meses:
             continue
-        # junta meses seguidos com o mesmo valor (diferença de 1 centavo conta como igual). Um mês que
-        # volta a um valor já substituído é faturamento atrasado, não reajuste: não abre período novo.
+        # junta meses seguidos com o mesmo valor Nacional. Um mês que volta a um valor já substituído é
+        # faturamento atrasado, não reajuste: não abre período novo.
         periodos, superados = [], []
-        igual = lambda a, b: abs(a - b) <= 0.011
-        for mes, val, n in meses:
+        for mes, val, flex, n in meses:
             if periodos and igual(periodos[-1]["valor"], val):
-                periodos[-1]["ate"] = mes
                 periodos[-1]["n"] += n
+                if flex:
+                    periodos[-1]["flex"].append(flex)
             elif any(igual(v, val) for v in superados):
                 continue
             else:
                 if periodos:
                     superados.append(periodos[-1]["valor"])
-                periodos.append(dict(valor=val, de=mes, ate=mes, n=n))
+                periodos.append(dict(valor=val, de=mes, n=n, flex=[flex] if flex else []))
         for i, p in enumerate(periodos):
             alertas = []
             for j in (i - 1, i + 1):
@@ -232,14 +246,27 @@ def sugerir_valores(itens, minimo_mes=5):
                 alertas.append("poucos atendimentos")
             if alertas:
                 alertas.insert(0, "Pode ser pagamento em partes ou valor incompleto")
-            p["conferir"] = "; ".join(alertas)
+            flex = pd.Series(p["flex"]).value_counts().index[0] if p["flex"] else None
             inicio = None if i == 0 else pd.Timestamp(p["de"] + "-01").date()
             fim = (pd.Timestamp(periodos[i + 1]["de"] + "-01") - pd.Timedelta(days=1)).date() \
                 if i + 1 < len(periodos) else None
             linhas.append({"Código": str(cod), "Procedimento": proc,
                            "Especialidade": me.especialidade_do_procedimento(proc) or "",
-                           "Valor": round(p["valor"], 2), "Início": inicio, "Fim": fim, "Atendimentos": int(p["n"]),
-                           "Conferir": p["conferir"]})
+                           "Valor Rede Nacional": round(p["valor"], 2),
+                           "Valor Rede Flex": round(float(flex), 2) if flex else None,
+                           "% Flex": round(float(flex) / p["valor"] * 100, 1) if flex else None,
+                           "Início": inicio, "Fim": fim, "Atendimentos": int(p["n"]),
+                           "Conferir": "; ".join(alertas), "Observação": ""})
     out = pd.DataFrame(linhas, columns=cols)
-    return out.sort_values(["Atendimentos"], ascending=False, kind="stable").sort_values(
-        ["Código", "Início"], na_position="first", kind="stable").reset_index(drop=True)
+    # período sem atendimento Flex no extrato: calcula pelo mesmo percentual dos outros períodos do código
+    for cod, g in out.groupby("Código"):
+        pcts = g["% Flex"].dropna()
+        if pcts.empty:
+            continue
+        pct = float(pcts.value_counts().index[0])
+        falta = g.index[g["Valor Rede Flex"].isna()]
+        for i in falta:
+            out.at[i, "Valor Rede Flex"] = round(out.at[i, "Valor Rede Nacional"] * pct / 100, 2)
+            out.at[i, "% Flex"] = pct
+            out.at[i, "Observação"] = f"Flex calculado ({pct:.0f}% do Nacional): sem atendimento Flex no período"
+    return out.sort_values(["Código", "Início"], na_position="first", kind="stable").reset_index(drop=True)

@@ -60,7 +60,7 @@ COLUNAS_PADRAO_GLOSAS = [
     "Motivo da glosa",
 ]
 # Colunas novas (ficam sempre depois das originais)
-COLUNAS_EXTRAS = ["Quantidade", "Quantidade liberada", "Valor unitário", "Lote", "Status da glosa",
+COLUNAS_EXTRAS = ["Quantidade", "Quantidade liberada", "Valor unitário", "Rede", "Lote", "Status da glosa",
                   "Data de pagamento", "Código da glosa", "Valor de referência", "Fonte do valor informado",
                   "Diferença sem justificativa", "Alertas"]
 COLUNAS_COMPLETAS = COLUNAS_PADRAO_GLOSAS + COLUNAS_EXTRAS
@@ -873,21 +873,39 @@ def vigente(inicio, fim, data):
     return (not ini or ini <= d) and (not fi or fi >= d)
 
 
-def _linhas_vigencia(df, col_valor):
-    ini = df["vigencia_inicio"] if "vigencia_inicio" in df.columns else pd.Series([None] * len(df), index=df.index)
-    fim = df["vigencia_fim"] if "vigencia_fim" in df.columns else pd.Series([None] * len(df), index=df.index)
-    return [(a, b, float(v)) for a, b, v in zip(ini, fim, df[col_valor]) if pd.notna(v)]
+REDE_NACIONAL = "Nacional"
+REDE_FLEX = "Flex"
+
+
+def _linhas_vigencia(df, col_valor, col_flex="valor_flex"):
+    vazio = pd.Series([None] * len(df), index=df.index)
+    ini = df["vigencia_inicio"] if "vigencia_inicio" in df.columns else vazio
+    fim = df["vigencia_fim"] if "vigencia_fim" in df.columns else vazio
+    flex = pd.to_numeric(df[col_flex], errors="coerce") if col_flex in df.columns else vazio
+    return [(a, b, float(v), (float(f) if f is not None and pd.notna(f) and f > 0 else None))
+            for a, b, v, f in zip(ini, fim, df[col_valor], flex) if pd.notna(v)]
 
 
 def valor_vigente(linhas, data):
-    """linhas: [(inicio, fim, valor)]. Devolve o valor válido na data, ou None (nenhum ou ambíguo)."""
-    vals = {round(v, 2) for ini, fim, v in linhas if vigente(ini, fim, data)}
-    return vals.pop() if len(vals) == 1 else None
+    """linhas: [(inicio, fim, valor, ...)]. Devolve o valor válido na data, ou None (nenhum ou ambíguo)."""
+    r = valores_vigentes(linhas, data)
+    return r[0] if r else None
+
+
+def valores_vigentes(linhas, data):
+    """Devolve (valor Rede Nacional, valor Rede Flex ou None) válidos na data, ou None."""
+    vals = {(round(l[2], 2), round(l[3], 2) if len(l) > 3 and l[3] else None)
+            for l in linhas if vigente(l[0], l[1], data)}
+    if len({v[0] for v in vals}) != 1:
+        return None
+    flex = {v[1] for v in vals if v[1]}
+    return next(iter(vals))[0], (flex.pop() if len(flex) == 1 else None)
 
 
 def _ref_cadastro(tabela, operadora, codigo, procedimento, cache, data=""):
-    """Valor que a clínica cadastrou para o procedimento nesse plano, na data do atendimento (ou None).
-    Procura primeiro pelo código TUSS; se o código não está cadastrado, pela especialidade."""
+    """Valores que a clínica cadastrou para o procedimento nesse plano, na data do atendimento:
+    (Rede Nacional, Rede Flex ou None), ou None. Procura primeiro pelo código TUSS; se o código não está
+    cadastrado, pela especialidade."""
     if tabela is None or tabela.empty or not operadora:
         return None
     chave = (operadora, codigo, procedimento)
@@ -909,8 +927,8 @@ def _ref_cadastro(tabela, operadora, codigo, procedimento, cache, data=""):
         cache[chave] = (por_cod, por_esp)
     por_cod, por_esp = cache[chave]
     if por_cod:  # código cadastrado: só vale o valor do código (mesmo que não haja vigência na data)
-        return valor_vigente(por_cod, data)
-    return valor_vigente(por_esp, data) if por_esp else None
+        return valores_vigentes(por_cod, data)
+    return valores_vigentes(por_esp, data) if por_esp else None
 
 
 def _moda(serie, minimo=3):
@@ -1091,17 +1109,18 @@ def _analisar(d, operadora, conhecimento):
     glosa_arq = pd.to_numeric(d["Valor da glosa"], errors="coerce")
     mes = pd.to_datetime(d["Data de pagamento"].astype(str).str[:10], format="%d/%m/%Y", errors="coerce").dt.strftime("%Y-%m").fillna("")
 
-    ref, fonte = [], []
+    ref, fonte, ref_flex = [], [], []
     for i in range(len(d)):
         cod = _txt(d["Código"].iat[i])
         if bool(d["_informado_no_arquivo"].iat[i]) and pd.notna(informado.iat[i]):
             r = float(informado.iat[i]) / unid.iat[i] if unid.iat[i] else float(informado.iat[i])
-            ref.append(round(r, 2)); fonte.append(FONTE_ARQUIVO)
+            ref.append(round(r, 2)); fonte.append(FONTE_ARQUIVO); ref_flex.append(None)
             continue
         r = _ref_cadastro(tabela, operadora, cod, d["Procedimento"].iat[i], cache_cad, d["Data do evento"].iat[i])
         if r is not None:
-            ref.append(r); fonte.append(FONTE_CADASTRO)
+            ref.append(r[0]); fonte.append(FONTE_CADASTRO); ref_flex.append(r[1])
             continue
+        ref_flex.append(None)
         r = (refs_arquivo.get((op, cod, mes.iat[i])) or refs_arquivo.get((op, cod, ""))
              or refs_hist.get((op, cod, mes.iat[i])) or refs_hist.get((op, cod, "")))
         if r:
@@ -1109,6 +1128,33 @@ def _analisar(d, operadora, conhecimento):
         else:
             ref.append(float("nan")); fonte.append(FONTE_NENHUMA)
     ref = pd.Series(ref, index=d.index, dtype="float64")
+
+    # Rede do atendimento (Nacional x Flex): pelo valor pago por unidade; quando o pagamento não bate com
+    # nenhum dos dois (glosa, pagamento parcial), pela rede do paciente nos outros atendimentos.
+    # valor pago por unidade LIBERADA (5 solicitadas, 4 liberadas e pagas: divide por 4)
+    unid_paga = ql.where(ql > 0, unid).fillna(unid)
+    unit_pago = (pago / unid_paga).round(2)
+    rede = []
+    for i in range(len(d)):
+        f, n = ref_flex[i], ref.iat[i]
+        if not f or pd.isna(n):
+            rede.append("")
+        elif abs(unit_pago.iat[i] - f) <= TOL:
+            rede.append(REDE_FLEX)
+        elif abs(unit_pago.iat[i] - n) <= TOL:
+            rede.append(REDE_NACIONAL)
+        else:
+            rede.append("?")
+    rede = pd.Series(rede, index=d.index)
+    pac = d["Nome do paciente"].map(_norm)
+    decididos = rede.isin([REDE_NACIONAL, REDE_FLEX])
+    flex_pac = (rede[decididos] == REDE_FLEX).groupby(pac[decididos]).mean()
+    rede_pac = pac.map(lambda p: REDE_FLEX if flex_pac.get(p, 0) > 0.5 else REDE_NACIONAL)
+    rede = rede.where(rede != "?", rede_pac)
+    # paciente Flex em procedimento sem valor Flex (ex.: consulta médica) paga o valor Nacional
+    for i in range(len(d)):
+        if rede.iat[i] == REDE_FLEX and ref_flex[i]:
+            ref.iat[i] = ref_flex[i]
     sem_inf_arquivo = ~(d["_informado_no_arquivo"].astype(bool) & informado.notna())
     informado = informado.where(~sem_inf_arquivo, (ref * unid).round(2))
 
@@ -1192,6 +1238,7 @@ def _analisar(d, operadora, conhecimento):
     out["Valor da glosa"] = glosa.round(2)
     out["Diferença sem justificativa"] = dif.round(2)
     out["Valor de referência"] = ref.round(2)
+    out["Rede"] = rede
     out["Fonte do valor informado"] = fonte
     out["Status da glosa"] = sit
     out["Motivo da glosa"] = motivo_final
@@ -1203,9 +1250,63 @@ def _analisar(d, operadora, conhecimento):
     return out, refs_arquivo, cod_glosa
 
 
+def _juntar_complementos(out):
+    """Pagamento em duas partes: o plano paga parte do atendimento numa guia e o complemento em outra guia
+    (meses depois), para o mesmo paciente, procedimento e data. Se as duas partes somam o valor de referência,
+    vira um atendimento só, sem glosa, com o alerta de pagamento em partes."""
+    if out.empty:
+        return out, 0
+    chave = (out["Nome do paciente"].map(_norm) + "|" + out["Código"].astype(str) + "|" + out["Data do evento"].astype(str))
+    rep = chave.duplicated(keep=False) & out["Código"].astype(str).str.strip().ne("") & out["Código"].ne("-")
+    if not rep.any():
+        return out, 0
+    out = out.copy()
+    remover = set()
+    for _, g in out[rep].groupby(chave[rep], sort=False):
+        idx = sorted(g.index, key=lambda i: (pd.to_datetime(out.at[i, "Data de pagamento"], format="%d/%m/%Y",
+                                                            errors="coerce") or pd.Timestamp.max, i))
+        for a in idx:
+            if a in remover:
+                continue
+            inf_a, pago_a = out.at[a, "Valor informado"], out.at[a, "Valor pago"]
+            falta_a = (out.at[a, "Valor da glosa"] or 0) + (out.at[a, "Diferença sem justificativa"] or 0)
+            if pd.isna(inf_a) or falta_a <= TOL or pago_a <= TOL:
+                continue
+            for b in idx:
+                if b == a or b in remover:
+                    continue
+                pago_b, inf_b = out.at[b, "Valor pago"], out.at[b, "Valor informado"]
+                if pago_b <= TOL or pd.isna(inf_b) or abs(inf_b - inf_a) > TOL:
+                    continue
+                if abs(pago_a + pago_b - inf_a) > TOL:
+                    continue
+                data_b = out.at[b, "Data de pagamento"]
+                out.at[a, "Valor pago"] = round(pago_a + pago_b, 2)
+                out.at[a, "Valor da glosa"] = 0.0
+                out.at[a, "Diferença sem justificativa"] = 0.0
+                out.at[a, "Status da glosa"] = "Sem glosa"
+                docs = [d for d in (str(out.at[a, "Doc Original"]), str(out.at[b, "Doc Original"])) if d and d != "-"]
+                out.at[a, "Doc Original"] = "; ".join(dict.fromkeys(docs)) or "-"
+                motivo_a = str(out.at[a, "Motivo da glosa"] or "")
+                if motivo_a.startswith(("Glosa Silenciosa", "Quantidade liberada menor")):
+                    out.at[a, "Motivo da glosa"] = ""
+                alerta = (f"Pago em 2 partes: {pago_a:.2f} em {out.at[a, 'Data de pagamento']} + {pago_b:.2f} em "
+                          f"{data_b} (complemento)").replace(".", ",")
+                if motivo_a and not motivo_a.startswith(("Glosa Silenciosa", "Quantidade liberada menor")):
+                    alerta = "Glosa revertida. " + alerta
+                antigos = [x for x in str(out.at[a, "Alertas"] or "").split("; ")
+                           if x and not x.startswith(("Pago ", "Sem valor"))]
+                out.at[a, "Alertas"] = "; ".join(antigos + [alerta])
+                if data_b and data_b != "-":
+                    out.at[a, "Data de pagamento"] = data_b
+                remover.add(b)
+                break
+    return out.drop(index=list(remover)).reset_index(drop=True), len(remover)
+
+
 def finalizar(linhas, operadora, conhecimento=None):
     """Junta as tabelas lidas e faz a análise completa. Retorna (df, resumo)."""
-    resumo = dict(linhas_lidas=0, copias_removidas=0, atendimentos=0, linhas_agrupadas=0,
+    resumo = dict(linhas_lidas=0, copias_removidas=0, atendimentos=0, linhas_agrupadas=0, complementos=0,
                   referencias={}, codigos_glosa={})
     if not linhas:
         return pd.DataFrame(columns=COLUNAS_COMPLETAS), resumo
@@ -1221,6 +1322,7 @@ def finalizar(linhas, operadora, conhecimento=None):
     g = _consolidar(d)
     resumo["linhas_agrupadas"] = int(len(d) - len(g))
     out, refs, codigos = _analisar(g, operadora, conhecimento)
+    out, resumo["complementos"] = _juntar_complementos(out)
     resumo.update(atendimentos=len(out), referencias=refs, codigos_glosa=codigos)
     for c in COLUNAS_COMPLETAS:
         if c not in out.columns:
