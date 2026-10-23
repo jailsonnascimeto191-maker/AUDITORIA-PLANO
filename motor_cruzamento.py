@@ -549,12 +549,20 @@ def _so_digitos(x):
     return re.sub(r"\D", "", str(x or ""))
 
 
-def _valor_tabela(tab, col, plano, tempo, cache):
-    """Procura em tab (colunas plano, tempo_atendimento, <col>) o valor do plano/tempo.
-    Retorna float ou None (não encontrado ou ambíguo)."""
+def _valor_tabela(tab, col, plano, tempo, cache, data=""):
+    """Procura em tab (colunas plano, tempo_atendimento, <col>, vigência opcional) o valor do
+    plano/tempo válido na data do atendimento. Retorna float ou None (não encontrado ou ambíguo)."""
     if tab is None or tab.empty:
         return None
-    chave = (_norm(plano), _so_digitos(tempo) or _norm(tempo))
+    if data and ("vigencia_inicio" in tab.columns or "vigencia_fim" in tab.columns):
+        ok = [me.vigente(a, b, data) for a, b in zip(tab.get("vigencia_inicio", [None] * len(tab)),
+                                                     tab.get("vigencia_fim", [None] * len(tab)))]
+        tab = tab[ok]
+        if tab.empty:
+            return None
+    elif "vigencia_fim" in tab.columns:  # sem data: só o que está em vigor
+        tab = tab[[not me.data_iso(f) for f in tab["vigencia_fim"]]]
+    chave = (_norm(plano), _so_digitos(tempo) or _norm(tempo), me.data_iso(data)[:10])
     if chave in cache:
         return cache[chave]
     t = tab.copy()
@@ -598,11 +606,12 @@ def montar_espelho_producao(cruzado, tab_faturamento=None, tab_repasse=None, des
 
     cf, cr = {}, {}
     unit, fonte, rep_unit = [], [], []
-    for plano, tempo in zip(cruzado["Plano"], cruzado["Tempo"]):
-        u = _valor_tabela(tab_faturamento, "valor_plano", plano, tempo, cf)
+    datas = cruzado["Data"] if "Data" in cruzado.columns else [""] * len(cruzado)
+    for plano, tempo, data in zip(cruzado["Plano"], cruzado["Tempo"], datas):
+        u = _valor_tabela(tab_faturamento, "valor_plano", plano, tempo, cf, data)
         unit.append(u)
         fonte.append("Tabela de faturamento" if u is not None else "")
-        rep_unit.append(_valor_tabela(tab_repasse, "valor_profissional", plano, tempo, cr))
+        rep_unit.append(_valor_tabela(tab_repasse, "valor_profissional", plano, tempo, cr, data))
 
     e = cruzado.copy().reset_index(drop=True)
     e["Valor unitário (plano)"] = unit

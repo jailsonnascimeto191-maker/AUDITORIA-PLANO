@@ -73,7 +73,7 @@ def carregar():
                 con["codigos_glosa"][cod] = desc
             cols = banco.colunas(conn, "tabela_valores_faturamento")
             if cols:
-                extra = ", codigo_tuss" if "codigo_tuss" in cols else ""
+                extra = "".join(f", {c}" for c in ("codigo_tuss", "vigencia_inicio", "vigencia_fim") if c in cols)
                 con["tabela_valores"] = banco.ler_df(
                     conn, f"SELECT especialidade, plano, tempo_atendimento, valor_plano{extra} "
                           "FROM tabela_valores_faturamento")
@@ -164,3 +164,82 @@ def mapa_para_tabela(leitura):
     """Mapeamento de uma tabela lida, no formato campo -> coluna (para a tela de conferência)."""
     mapa = leitura.get("mapa") or {}
     return pd.DataFrame([{"Campo do sistema": c, "Coluna do arquivo": mapa.get(c, "")} for c in CAMPOS_EDITAVEIS])
+
+
+# --------------------------------------------------------------------------
+# Sugestão da tabela de valores a partir dos demonstrativos (com reajustes)
+# --------------------------------------------------------------------------
+def sugerir_valores(itens, minimo_mes=5):
+    """A partir dos itens do histórico de UMA operadora, sugere o valor de cada código de procedimento e
+    os períodos de vigência (reajustes), pela data do atendimento.
+
+    Usa só itens pagos por inteiro (sem glosa, sem justificativa, quantidade toda liberada). Para cada
+    código e mês do atendimento, pega o valor unitário mais frequente; meses seguidos com o mesmo valor
+    formam um período. Retorna DataFrame com: Código, Procedimento, Especialidade, Valor, Início, Fim,
+    Atendimentos."""
+    cols = ["Código", "Procedimento", "Especialidade", "Valor", "Início", "Fim", "Atendimentos", "Conferir"]
+    if itens is None or itens.empty:
+        return pd.DataFrame(columns=cols)
+    d = itens.copy()
+    num = lambda c: pd.to_numeric(d.get(c), errors="coerce")
+    qs, ql, pago, glosa = num("Quantidade"), num("Quantidade liberada"), num("Valor pago"), num("Valor da glosa")
+    texto = lambda c: d.get(c, pd.Series("", index=d.index)).fillna("").astype(str).str.strip()
+    cheio = (texto("Motivo da glosa").eq("") & texto("Código da glosa").eq("") & (glosa.fillna(0) <= 0.005)
+             & (ql.isna() | qs.isna() | (ql >= qs)) & (pago > 0) & texto("Código").ne("") & texto("Código").ne("-"))
+    d = d[cheio].copy()
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    unid = qs[d.index].where(qs[d.index] > 0, 1.0).fillna(1.0)
+    d["_unit"] = (pago[d.index] / unid).round(2)
+    iso = d["_iso"] if "_iso" in d.columns else d["Data do evento"].map(me.data_iso)
+    d["_mes"] = iso.fillna("").astype(str).str[:7]
+    d = d[d["_mes"].str.len() == 7]
+
+    linhas = []
+    for cod, g in d.groupby("Código"):
+        proc = g["Procedimento"].fillna("").astype(str).value_counts().index[0]
+        meses = []
+        for mes, gm in g.groupby("_mes", sort=True):
+            cont = gm["_unit"].value_counts()
+            if cont.iloc[0] < minimo_mes or cont.iloc[0] < 0.5 * len(gm):
+                continue  # mês com poucos atendimentos ou valores misturados: não decide nada
+            meses.append((mes, float(cont.index[0]), len(gm)))
+        if not meses:
+            continue
+        # junta meses seguidos com o mesmo valor (diferença de 1 centavo conta como igual). Um mês que
+        # volta a um valor já substituído é faturamento atrasado, não reajuste: não abre período novo.
+        periodos, superados = [], []
+        igual = lambda a, b: abs(a - b) <= 0.011
+        for mes, val, n in meses:
+            if periodos and igual(periodos[-1]["valor"], val):
+                periodos[-1]["ate"] = mes
+                periodos[-1]["n"] += n
+            elif any(igual(v, val) for v in superados):
+                continue
+            else:
+                if periodos:
+                    superados.append(periodos[-1]["valor"])
+                periodos.append(dict(valor=val, de=mes, ate=mes, n=n))
+        for i, p in enumerate(periodos):
+            alertas = []
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(periodos):
+                    var = periodos[j]["valor"] / p["valor"] - 1 if p["valor"] else 0
+                    if abs(var) > 0.15:
+                        alertas.append(f"variação de {var * 100:+.0f}% em relação ao período "
+                                       f"{'anterior' if j < i else 'seguinte'}".replace(".", ","))
+            if p["n"] < 10:
+                alertas.append("poucos atendimentos")
+            if alertas:
+                alertas.insert(0, "Pode ser pagamento em partes ou valor incompleto")
+            p["conferir"] = "; ".join(alertas)
+            inicio = None if i == 0 else pd.Timestamp(p["de"] + "-01").date()
+            fim = (pd.Timestamp(periodos[i + 1]["de"] + "-01") - pd.Timedelta(days=1)).date() \
+                if i + 1 < len(periodos) else None
+            linhas.append({"Código": str(cod), "Procedimento": proc,
+                           "Especialidade": me.especialidade_do_procedimento(proc) or "",
+                           "Valor": round(p["valor"], 2), "Início": inicio, "Fim": fim, "Atendimentos": int(p["n"]),
+                           "Conferir": p["conferir"]})
+    out = pd.DataFrame(linhas, columns=cols)
+    return out.sort_values(["Atendimentos"], ascending=False, kind="stable").sort_values(
+        ["Código", "Início"], na_position="first", kind="stable").reset_index(drop=True)

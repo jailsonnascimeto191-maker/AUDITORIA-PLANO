@@ -818,13 +818,13 @@ def _com_cabecalho(df):
 # Análise: duplicidade, consolidação, valor de referência e glosa
 # --------------------------------------------------------------------------
 _ESPECIALIDADES_POR_TERMO = [
-    (r"PSICOMOTRIC", "PSICOMOTRICIDADE"),
+    (r"PSICOMOTRIC|\bPSICOMO?T?\b|\bPSICOM\b", "PSICOMOTRICIDADE"),
     (r"PSICOPEDAG", "PSICOPEDAGOGIA"),
-    (r"TERAPIA OCUPACIONAL|TERAPEUTA OCUPACIONAL", "TERAPIA OCUPACIONAL"),
+    (r"TERAPIA OCUPAC|TERAPEUTA OCUPAC|\bC TO\b|\bT O\b", "TERAPIA OCUPACIONAL"),
     (r"FONOAUDIOLOG|\bFONO\b", "FONOAUDIOLOGIA"),
     (r"NUTRICION|NUTRICAO|\bNUTRI", "NUTRIÇÃO"),
     (r"FISIOTERAP|\bFISIO\b|\bRPG\b", "FISIOTERAPIA"),
-    (r"PSICOTERAPIA|PSICOLOG", "PSICOLOGIA"),
+    (r"PSICOTERAPIA|PSICOLOG|\bPSICO\b", "PSICOLOGIA"),
 ]
 
 
@@ -846,32 +846,71 @@ def _plano_casa(plano_tabela, operadora):
     return a == b or a in b or b in a or (len(pa) >= 4 and pa == pb)
 
 
-def _ref_cadastro(tabela, operadora, codigo, procedimento, cache):
-    """Valor que a clínica cadastrou para o procedimento nesse plano (ou None)."""
+def data_iso(v):
+    """'dd/mm/aaaa', 'aaaa-mm-dd', date ou datetime -> 'aaaa-mm-dd' (ou '' se não for data)."""
+    if v is None:
+        return ""
+    if hasattr(v, "strftime") and not isinstance(v, str):
+        try:
+            return "" if pd.isna(v) else v.strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            return ""
+    s = _txt(v)
+    m = _RE_DATA_ISO.match(s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    m = _RE_DATA_BR.match(s)
+    if m:
+        return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+    return ""
+
+
+def vigente(inicio, fim, data):
+    """O valor vale na data do atendimento? Sem data: vale o que está em vigor (sem fim)."""
+    ini, fi, d = data_iso(inicio), data_iso(fim), data_iso(data)
+    if not d:
+        return not fi
+    return (not ini or ini <= d) and (not fi or fi >= d)
+
+
+def _linhas_vigencia(df, col_valor):
+    ini = df["vigencia_inicio"] if "vigencia_inicio" in df.columns else pd.Series([None] * len(df), index=df.index)
+    fim = df["vigencia_fim"] if "vigencia_fim" in df.columns else pd.Series([None] * len(df), index=df.index)
+    return [(a, b, float(v)) for a, b, v in zip(ini, fim, df[col_valor]) if pd.notna(v)]
+
+
+def valor_vigente(linhas, data):
+    """linhas: [(inicio, fim, valor)]. Devolve o valor válido na data, ou None (nenhum ou ambíguo)."""
+    vals = {round(v, 2) for ini, fim, v in linhas if vigente(ini, fim, data)}
+    return vals.pop() if len(vals) == 1 else None
+
+
+def _ref_cadastro(tabela, operadora, codigo, procedimento, cache, data=""):
+    """Valor que a clínica cadastrou para o procedimento nesse plano, na data do atendimento (ou None).
+    Procura primeiro pelo código TUSS; se o código não está cadastrado, pela especialidade."""
     if tabela is None or tabela.empty or not operadora:
         return None
     chave = (operadora, codigo, procedimento)
-    if chave in cache:
-        return cache[chave]
-    t = tabela[tabela["plano"].map(lambda p: _plano_casa(p, operadora))]
-    res = None
-    if not t.empty:
-        if "codigo_tuss" in t.columns and codigo:
-            por_cod = t[t["codigo_tuss"].fillna("").astype(str).map(_id_txt).str.replace(r"\D", "", regex=True)
-                        == re.sub(r"\D", "", str(codigo))]
-            if por_cod["valor_plano"].nunique() == 1:
-                res = float(por_cod["valor_plano"].iloc[0])
-        if res is None:
+    if chave not in cache:
+        t = tabela[tabela["plano"].map(lambda p: _plano_casa(p, operadora))]
+        por_cod, por_esp = [], []
+        if not t.empty:
+            if "codigo_tuss" in t.columns and codigo:
+                pc = t[t["codigo_tuss"].fillna("").astype(str).map(_id_txt).str.replace(r"\D", "", regex=True)
+                       == re.sub(r"\D", "", str(codigo))]
+                por_cod = _linhas_vigencia(pc, "valor_plano")
             esp = especialidade_do_procedimento(procedimento)
             if esp:
-                por_esp = t[t["especialidade"].map(_norm) == _norm(esp)]
-                if "codigo_tuss" in por_esp.columns:  # linhas com código de outro procedimento não valem
-                    sem_cod = por_esp["codigo_tuss"].fillna("").astype(str).str.strip().eq("")
-                    por_esp = por_esp[sem_cod] if sem_cod.any() else por_esp
-                if por_esp["valor_plano"].nunique() == 1:
-                    res = float(por_esp["valor_plano"].iloc[0])
-    cache[chave] = res
-    return res
+                pe = t[t["especialidade"].map(_norm) == _norm(esp)]
+                if "codigo_tuss" in pe.columns:  # linhas com código de outro procedimento não valem
+                    sem_cod = pe["codigo_tuss"].fillna("").astype(str).str.strip().eq("")
+                    pe = pe[sem_cod] if sem_cod.any() else pe
+                por_esp = _linhas_vigencia(pe, "valor_plano")
+        cache[chave] = (por_cod, por_esp)
+    por_cod, por_esp = cache[chave]
+    if por_cod:  # código cadastrado: só vale o valor do código (mesmo que não haja vigência na data)
+        return valor_vigente(por_cod, data)
+    return valor_vigente(por_esp, data) if por_esp else None
 
 
 def _moda(serie, minimo=3):
@@ -1059,7 +1098,7 @@ def _analisar(d, operadora, conhecimento):
             r = float(informado.iat[i]) / unid.iat[i] if unid.iat[i] else float(informado.iat[i])
             ref.append(round(r, 2)); fonte.append(FONTE_ARQUIVO)
             continue
-        r = _ref_cadastro(tabela, operadora, cod, d["Procedimento"].iat[i], cache_cad)
+        r = _ref_cadastro(tabela, operadora, cod, d["Procedimento"].iat[i], cache_cad, d["Data do evento"].iat[i])
         if r is not None:
             ref.append(r); fonte.append(FONTE_CADASTRO)
             continue
