@@ -313,6 +313,7 @@ def _garantir_colunas(d):
     padrao = {"Data do evento": "-", "Protocolo": "-", "Doc Original": "-", "Nome do paciente": "",
               "Código": "-", "Procedimento": "", "Valor informado": 0.0, "Valor pago": 0.0,
               "Valor da glosa": 0.0, "Motivo da glosa": "", "Quantidade": 1.0, "Lote": "-",
+              "Complemento recebido": 0.0,
               "Status da glosa": "", "Data de pagamento": "-"}
     for c, v in padrao.items():
         if c not in d.columns:
@@ -404,6 +405,7 @@ def _agregar(d, chaves):
         "Valor informado": ("Valor informado", "sum"),
         "Valor pago": ("Valor pago", "sum"),
         "Valor da glosa": ("Valor da glosa", "sum"),
+        "Complemento recebido": ("Complemento recebido", "sum"),
         "Quantidade": ("Quantidade", "sum"),
         "Doc Original": ("Doc Original", _jn),
         "Lote": ("Lote", _jn),
@@ -835,7 +837,9 @@ def cruzar_faturamento_recebimento(fat, demo, data_envio_padrao=None):
         m, crit = achou.get(i, (None, "-"))
         fat_v = float(r["Valor faturado"])
         if m is not None:
-            pago, glosa = float(m["Valor pago"]), float(m["Valor da glosa"])
+            # complemento pago em outra guia (pagamento em duas partes) conta como recebido desta guia
+            pago = float(m["Valor pago"]) + me._num(m.get("Complemento recebido", 0))
+            glosa = float(m["Valor da glosa"])
             motivo = m["Motivo da glosa"]
             dt_pag, meses = m["Data de pagamento"], m["Meses de pagamento"]
             plano = r["Plano"] or m.get("Operadora", "")

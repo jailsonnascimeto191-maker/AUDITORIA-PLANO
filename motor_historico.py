@@ -6,8 +6,13 @@ Painel (gráficos por mês, operadora e motivo) e a pesquisa da Lupa de Glosas.
 Se o mesmo arquivo (mesmo conteúdo) for processado de novo, a versão anterior é substituída.
 Atendimentos que já estão no histórico vindos de OUTRO arquivo (mesma guia, código, data, paciente e
 data de crédito) não são gravados de novo, para não contar em dobro.
+
+Pagamento em duas partes entre arquivos diferentes: ao guardar um demonstrativo, o sistema procura no
+histórico da mesma operadora a outra parte do pagamento (ver motor_extracao.encontrar_pares) e LIGA as duas
+linhas, guardando os valores originais. Remover ou substituir um dos arquivos desfaz o vínculo.
 """
 import hashlib
+import json
 import re
 
 import pandas as pd
@@ -41,9 +46,14 @@ COLUNAS = {
     "Diferença sem justificativa": "diferenca",
     "Alertas": "alertas",
     "Rede": "rede",
+    "Complemento recebido": "complemento",
+    "Vínculo": "vinculo",
 }
 NUMERICAS = {"valor_informado", "valor_pago", "valor_glosa", "quantidade", "valor_unitario",
-             "quantidade_liberada", "valor_referencia", "diferenca"}
+             "quantidade_liberada", "valor_referencia", "diferenca", "complemento"}
+# campos alterados por um vínculo entre arquivos (guardados em orig_json para poder desfazer)
+CAMPOS_VINCULO = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
+                  "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"]
 
 
 def _conectar():
@@ -76,9 +86,11 @@ def init_historico():
         )
         # bancos criados por versões anteriores: acrescenta as colunas novas
         existentes = banco.colunas(conn, "demonstrativo_itens")
-        for c in list(COLUNAS.values()) + ["chave"]:
+        for c in list(COLUNAS.values()) + ["chave", "orig_json"]:
             if c not in existentes:
                 conn.execute(f"ALTER TABLE demonstrativo_itens ADD COLUMN {c} {'REAL' if c in NUMERICAS else 'TEXT'}")
+        if "vinculo_item" not in existentes:
+            conn.execute("ALTER TABLE demonstrativo_itens ADD COLUMN vinculo_item INTEGER")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_demo ON demonstrativo_itens (demonstrativo_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_chave ON demonstrativo_itens (chave)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_data ON demonstrativo_itens (data_evento_iso)")
@@ -110,9 +122,15 @@ def salvar_demonstrativo(df, arquivo, hash_, usuario, operadora):
         return None, False, 0
     with _conectar() as conn:
         antigos = [r[0] for r in conn.execute("SELECT id FROM demonstrativos WHERE hash = ?", (hash_,)).fetchall()]
+        religar = set()
         for i in antigos:
+            op_antiga = _desvincular(conn, i)
+            if op_antiga:
+                religar.add(op_antiga)
             conn.execute("DELETE FROM demonstrativo_itens WHERE demonstrativo_id = ?", (i,))
             conn.execute("DELETE FROM demonstrativos WHERE id = ?", (i,))
+        for op_antiga in religar:
+            _vincular(conn, op_antiga)
         registros = [dict(zip(df.columns, r)) for r in df.itertuples(index=False)]
         chaves = [chave_atendimento(r) for r in registros]
         existentes = set()
@@ -167,8 +185,11 @@ def listar_demonstrativos():
 
 def excluir_demonstrativo(did):
     with _conectar() as conn:
+        operadora = _desvincular(conn, int(did))
         conn.execute("DELETE FROM demonstrativo_itens WHERE demonstrativo_id = ?", (int(did),))
         conn.execute("DELETE FROM demonstrativos WHERE id = ?", (int(did),))
+        if operadora:
+            _vincular(conn, operadora)  # refaz os vínculos entre os arquivos que ficaram
         conn.commit()
 
 
@@ -201,7 +222,8 @@ def carregar_itens(desde_iso=None, operadoras_sel=None, somente_glosas=False):
             f"ORDER BY i.data_evento_iso DESC, i.id",
             params,
         )
-    for c in ("Valor informado", "Valor pago", "Valor da glosa", "Diferença sem justificativa"):
+    for c in ("Valor informado", "Valor pago", "Valor da glosa", "Diferença sem justificativa",
+              "Complemento recebido"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     for c in ("Quantidade", "Quantidade liberada", "Valor unitário", "Valor de referência"):
@@ -239,3 +261,183 @@ def resumo_painel(itens):
           .reset_index().sort_values("Valor glosado", ascending=False).head(10))
     mo["% do glosado"] = (mo["Valor glosado"] / glosado) if glosado else 0.0
     return {**res, "por_mes": pm, "por_operadora": po, "motivos": mo}
+
+
+# --------------------------------------------------------------------------
+# Pagamento em duas partes entre arquivos diferentes
+# --------------------------------------------------------------------------
+def _py(v):
+    if v is None:
+        return None
+    if hasattr(v, "item"):
+        try:
+            v = v.item()
+        except (ValueError, AttributeError):
+            pass
+    try:
+        if not isinstance(v, str) and pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return v
+
+
+def _itens_operadora(conn, operadora):
+    sel = ", ".join(f'i.{db} AS "{df}"' for df, db in COLUNAS.items())
+    df = banco.ler_df(
+        conn,
+        f'SELECT i.id AS "_id", i.demonstrativo_id AS "_demo", i.vinculo_item AS "_vinc", i.orig_json AS "_orig", '
+        f'{sel}, i.operadora AS "Operadora", d.arquivo AS "Arquivo" '
+        f"FROM demonstrativo_itens i JOIN demonstrativos d ON d.id = i.demonstrativo_id WHERE i.operadora = ?",
+        (operadora,),
+    )
+    for c in ("Valor informado", "Valor pago", "Valor da glosa", "Diferença sem justificativa", "Complemento recebido"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["Vínculo"] = df["Vínculo"].fillna("")
+    df.index = df["_id"].astype(int)
+    return df
+
+
+def _atualizar_totais(conn, demos):
+    for did in {int(d) for d in demos if d is not None}:
+        r = conn.execute("SELECT COUNT(*), SUM(valor_informado), SUM(valor_pago), SUM(valor_glosa) "
+                         "FROM demonstrativo_itens WHERE demonstrativo_id = ?", (did,)).fetchone()
+        conn.execute("UPDATE demonstrativos SET linhas=?, valor_informado=?, valor_pago=?, valor_glosa=? WHERE id=?",
+                     (r[0], round(r[1] or 0, 2), round(r[2] or 0, 2), round(r[3] or 0, 2), did))
+
+
+def _gravar_campos(conn, df, item_id, extra_sql="", extra_params=()):
+    sets = ", ".join(f"{COLUNAS[c]} = ?" for c in CAMPOS_VINCULO)
+    conn.execute(f"UPDATE demonstrativo_itens SET {sets}{extra_sql} WHERE id = ?",
+                 tuple(_py(df.at[item_id, c]) for c in CAMPOS_VINCULO) + tuple(extra_params) + (int(item_id),))
+
+
+def vincular_historico(operadora, demonstrativo_id=None):
+    """Liga, entre arquivos diferentes da mesma operadora, as aparições da mesma guia (recurso, restante,
+    pagamento repetido, glosa mantida) e os complementos pagos em outra guia. Com demonstrativo_id, só os
+    vínculos que envolvem esse arquivo; sem ele, todo o histórico da operadora.
+    Retorna (vínculos criados, casos para conferir)."""
+    if not operadora:
+        return 0, 0
+    with _conectar() as conn:
+        n = _vincular(conn, operadora, demonstrativo_id)
+        conn.commit()
+    return n
+
+
+def _vincular(conn, operadora, demonstrativo_id=None):
+    df = _itens_operadora(conn, operadora)
+    if df.empty or df["_demo"].nunique() < 2:
+        return 0, 0
+    exigir = {int(demonstrativo_id)} if demonstrativo_id is not None else None
+    if True:
+        afetados = set()
+        origem = lambda k: f"arquivo {df.at[k, 'Arquivo']}"
+        # 1) a mesma guia em outro arquivo (recurso, restante, pagamento repetido, glosa mantida)
+        mesma, conferir = me.encontrar_mesma_guia(df, df["_demo"], exigir_em=exigir)
+        for a, seguintes, tipo, ref in mesma:
+            orig = me.aplicar_vinculo_guia(df, a, seguintes, tipo, origem, ref)
+            for item in [a] + list(seguintes):
+                parceiro = seguintes[-1] if item == a else a
+                original = {c: _py(v) for c, v in orig[item].items()}
+                _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = ?",
+                               (int(parceiro), json.dumps(original, ensure_ascii=False)))
+                afetados.add(df.at[item, "_demo"])
+        # 2) complemento pago em outra guia (pagamento em duas partes)
+        pares, ambiguos = me.encontrar_pares(df, grupo=df["_demo"], exigir_em=exigir)
+        ambiguos = set(ambiguos) | set(conferir)
+        for a, b in pares:
+            orig = me.aplicar_vinculo(df, a, b, origem_a=f"arquivo {df.at[a, 'Arquivo']}",
+                                      origem_b=f"arquivo {df.at[b, 'Arquivo']}")
+            for item, parceiro in ((a, b), (b, a)):
+                original = {c: _py(v) for c, v in orig[item].items()}
+                _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = ?",
+                               (int(parceiro), json.dumps(original, ensure_ascii=False)))
+                afetados.add(df.at[item, "_demo"])
+        for k in ambiguos:
+            if me.ALERTA_POSSIVEL_PARTES not in str(df.at[k, "Alertas"] or ""):
+                novo = "; ".join([x for x in [str(df.at[k, "Alertas"] or "")] if x] + [me.ALERTA_POSSIVEL_PARTES])
+                conn.execute("UPDATE demonstrativo_itens SET alertas = ? WHERE id = ?", (novo, int(k)))
+        _atualizar_totais(conn, afetados)
+    return len(pares) + len(mesma), len(ambiguos)
+
+
+def _desvincular(conn, demonstrativo_id):
+    """Antes de remover um demonstrativo: restaura (pelos valores originais guardados) todos os itens de outros
+    arquivos que estavam ligados a ele, direta ou indiretamente, e limpa os avisos de conferência. Depois que o
+    arquivo sai, _religar() refaz os vínculos entre os arquivos que ficaram."""
+    did = int(demonstrativo_id)
+    op = conn.execute("SELECT operadora FROM demonstrativos WHERE id = ?", (did,)).fetchone()
+    if not op:
+        return 0
+    rows = conn.execute("SELECT id, demonstrativo_id, vinculo_item, orig_json FROM demonstrativo_itens "
+                        "WHERE operadora = ? AND vinculo_item IS NOT NULL", (op[0],)).fetchall()
+    info = {int(r[0]): (int(r[1]), r[2], r[3]) for r in rows}
+    # grupos ligados (vínculo em qualquer direção)
+    viz = {}
+    for iid, (_, parc, _) in info.items():
+        if parc is not None:
+            viz.setdefault(iid, set()).add(int(parc))
+            viz.setdefault(int(parc), set()).add(iid)
+    inicio = [i for i, (d, _, _) in info.items() if d == did]
+    marcados, pilha = set(), list(inicio)
+    while pilha:
+        k = pilha.pop()
+        if k in marcados:
+            continue
+        marcados.add(k)
+        pilha.extend(viz.get(k, ()))
+    afetados = set()
+    for iid in marcados:
+        if iid not in info or info[iid][0] == did:
+            continue
+        try:
+            orig = json.loads(info[iid][2] or "{}")
+        except ValueError:
+            orig = {}
+        if orig:
+            sets = ", ".join(f"{COLUNAS[c]} = ?" for c in CAMPOS_VINCULO if c in orig)
+            conn.execute(f"UPDATE demonstrativo_itens SET {sets}, vinculo_item = NULL, orig_json = NULL WHERE id = ?",
+                         tuple(orig[c] for c in CAMPOS_VINCULO if c in orig) + (iid,))
+        else:
+            conn.execute("UPDATE demonstrativo_itens SET vinculo_item = NULL, orig_json = NULL WHERE id = ?", (iid,))
+        afetados.add(info[iid][0])
+    for iid, alertas in conn.execute(
+            "SELECT id, alertas FROM demonstrativo_itens WHERE operadora = ? AND alertas LIKE ?",
+            (op[0], f"%{me.ALERTA_POSSIVEL_PARTES}%")).fetchall():
+        novo = "; ".join(x for x in str(alertas).split("; ") if x and x != me.ALERTA_POSSIVEL_PARTES)
+        conn.execute("UPDATE demonstrativo_itens SET alertas = ? WHERE id = ?", (novo, int(iid)))
+    _atualizar_totais(conn, afetados)
+    return op[0]
+
+
+def pagamentos_em_partes(operadoras_sel=None):
+    """Três listas para conferência: vínculos feitos, pagos a menor aguardando complemento/cobrança e
+    possíveis vínculos com mais de um candidato."""
+    itens = carregar_itens(operadoras_sel=operadoras_sel)
+    cols = ["Operadora", "Data do evento", "Nome do paciente", "Código", "Procedimento", "Doc Original",
+            "Valor informado", "Valor pago", "Complemento recebido", "Data de pagamento", "Vínculo", "Arquivo"]
+    if itens.empty:
+        vazio = pd.DataFrame(columns=cols)
+        return vazio, vazio, vazio
+    itens["Complemento recebido"] = pd.to_numeric(itens.get("Complemento recebido"), errors="coerce").fillna(0.0)
+    cols = [c for c in cols if c in itens.columns]
+    vinculados = itens[itens["Status da glosa"] == me.STATUS_PAGO_EM_PARTES][cols]
+    pend = itens[itens["Status da glosa"] == "Pago a menor sem justificativa"].copy()
+    pend["Falta receber"] = (pend["Diferença sem justificativa"]).round(2)
+    pendentes = pend[[c for c in cols if c not in ("Complemento recebido", "Vínculo")] + ["Falta receber"]]
+    possiveis = itens[itens["Alertas"].fillna("").str.contains(me.ALERTA_POSSIVEL_PARTES, regex=False)][cols]
+    return vinculados.reset_index(drop=True), pendentes.reset_index(drop=True), possiveis.reset_index(drop=True)
+
+
+def possiveis_duplicidades(operadoras_sel=None):
+    """Atendimentos que o plano parece ter pago mais de uma vez (mesma guia em créditos diferentes)."""
+    itens = carregar_itens(operadoras_sel=operadoras_sel)
+    if itens.empty:
+        return itens
+    d = itens[itens["Status da glosa"] == me.STATUS_DUPLICIDADE].copy()
+    d["Pago a mais"] = (d["Valor pago"] - d["Valor informado"]).clip(lower=0).round(2)
+    # quando as duas aparições estão em arquivos diferentes, a segunda tem informado zero: pago a mais = pago
+    cols = ["Operadora", "Data do evento", "Nome do paciente", "Código", "Procedimento", "Doc Original", "Protocolo",
+            "Valor informado", "Valor pago", "Pago a mais", "Data de pagamento", "Vínculo", "Arquivo"]
+    return d[[c for c in cols if c in d.columns]].reset_index(drop=True)

@@ -62,7 +62,7 @@ COLUNAS_PADRAO_GLOSAS = [
 # Colunas novas (ficam sempre depois das originais)
 COLUNAS_EXTRAS = ["Quantidade", "Quantidade liberada", "Valor unitário", "Rede", "Lote", "Status da glosa",
                   "Data de pagamento", "Código da glosa", "Valor de referência", "Fonte do valor informado",
-                  "Diferença sem justificativa", "Alertas"]
+                  "Diferença sem justificativa", "Complemento recebido", "Vínculo", "Alertas"]
 COLUNAS_COMPLETAS = COLUNAS_PADRAO_GLOSAS + COLUNAS_EXTRAS
 
 PLANO_AUTOMATICO = "Identificar pelo arquivo"
@@ -1066,12 +1066,22 @@ def _consolidar(d):
     if d.empty:
         return unicos.drop(columns=["_grupo", "_k_pac"]).reset_index(drop=True)
     soma = lambda s: float(pd.to_numeric(s, errors="coerce").sum(min_count=1)) if pd.to_numeric(s, errors="coerce").notna().any() else float("nan")
+    # O mesmo atendimento em créditos diferentes (recurso, complemento, pagamento repetido) não é sessão nova:
+    # quantidade solicitada e valor informado somam dentro de cada crédito e valem pelo MAIOR crédito.
+    d = d.copy()
+    d["_cred"] = d["Data de pagamento"].fillna("").astype(str)
+    for c in ("Quantidade", "Valor informado"):
+        if c in d.columns:
+            por_cred = d.assign(_v=pd.to_numeric(d[c], errors="coerce")).groupby(["_grupo", "_cred"])["_v"].sum(min_count=1)
+            maior = por_cred.groupby(level=0).max()
+            d[c] = d["_grupo"].map(maior)
+    primeiro = lambda s: s.iloc[0]
     agg = {
         "Data do evento": "first", "Protocolo": _juntar_texto, "Doc Original": "first",
         "Nome do paciente": "first", "Código": "first", "Procedimento": "first",
-        "Valor informado": soma, "Valor pago": soma, "Valor da glosa": soma,
+        "Valor informado": primeiro, "Valor pago": soma, "Valor da glosa": soma,
         "Motivo da glosa": _juntar_texto, "Código da glosa": _juntar_texto,
-        "Quantidade": soma, "Quantidade liberada": soma, "Valor unitário": "first", "Lote": _juntar_texto,
+        "Quantidade": primeiro, "Quantidade liberada": soma, "Valor unitário": "first", "Lote": _juntar_texto,
         "Data de pagamento": _ultima_data,
         "_status_glosa": lambda s: True if any(v is True for v in s) else (False if any(v is False for v in s) else None),
         "_informado_no_arquivo": "max", "_glosa_no_arquivo": "max", "_tabela": "first",
@@ -1086,7 +1096,8 @@ def _consolidar(d):
     for c in ("Protocolo", "Lote", "Doc Original"):
         if c in g.columns:
             g[c] = g[c].replace("", "-")
-    junto = pd.concat([unicos.drop(columns=["_grupo", "_k_pac"]), g.reset_index(drop=True)], ignore_index=True)
+    junto = pd.concat([unicos.drop(columns=["_grupo", "_k_pac"]),
+                       g.reset_index(drop=True).drop(columns=["_cred"], errors="ignore")], ignore_index=True)
     return junto.sort_values("_ordem", kind="stable").drop(columns=["_ordem"]).reset_index(drop=True)
 
 
@@ -1176,6 +1187,8 @@ def _analisar(d, operadora, conhecimento):
     dif = pd.Series(0.0, index=d.index)
     usa_glosa_arquivo = d["_glosa_no_arquivo"].astype(bool) & glosa_arq.notna()
     glosa[usa_glosa_arquivo] = glosa_arq[usa_glosa_arquivo].abs().round(2)
+    varios = usa_glosa_arquivo & (d["_creditos"] > 1) & informado.notna()
+    glosa[varios] = pd.concat([glosa[varios], falta[varios].clip(lower=0)], axis=1).min(axis=1)
     # arquivo com coluna de glosa vazia/zerada, mas com informado e pago: glosa = informado - pago
     if (d["_glosa_no_arquivo"].astype(bool)).any() and not (glosa_arq.fillna(0) > 0).any():
         calc = d["_informado_no_arquivo"].astype(bool) & informado.notna()
@@ -1219,6 +1232,9 @@ def _analisar(d, operadora, conhecimento):
                      "procedimento para calcular a diferença")
         if fonte[i] == FONTE_NENHUMA and not a:
             a.append("Sem valor de referência")
+        if d["_creditos"].iat[i] > 1 and pd.notna(informado.iat[i]) and informado.iat[i] > 0 \
+                and p > informado.iat[i] * 1.5 and g <= TOL:
+            s = STATUS_DUPLICIDADE
         sit.append(s)
         alertas.append("; ".join(a))
 
@@ -1250,58 +1266,262 @@ def _analisar(d, operadora, conhecimento):
     return out, refs_arquivo, cod_glosa
 
 
+STATUS_PAGO_EM_PARTES = "Pago em 2 partes"
+STATUS_DUPLICIDADE = "Possível pagamento em duplicidade"
+STATUS_COMPLEMENTO = "Complemento de pagamento"
+ALERTA_POSSIVEL_PARTES = "Possível pagamento em partes com mais de um candidato: conferir"
+_MOTIVOS_GERADOS = ("Glosa Silenciosa", "Quantidade liberada menor")
+
+
+def _num(v):
+    try:
+        f = float(v)
+        return 0.0 if pd.isna(f) else f
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _data_ord(v):
+    dt = pd.to_datetime(v, format="%d/%m/%Y", errors="coerce")
+    return pd.Timestamp.max if pd.isna(dt) else dt
+
+
+def encontrar_pares(df, grupo=None, exigir_em=None):
+    """Pagamentos em duas partes: duas linhas do MESMO paciente, procedimento, data de atendimento (e operadora,
+    se houver a coluna), ambas pagas a menor, com o mesmo valor de referência e cujos pagamentos somam esse valor
+    no centavo. Quando uma linha combina com mais de uma, nada é ligado (fica para conferir).
+
+    grupo: Series opcional; só liga linhas de grupos diferentes (ex.: arquivos diferentes do histórico).
+    exigir_em: conjunto opcional de grupos; o par precisa ter pelo menos uma linha num desses grupos.
+    Retorna (pares [(principal, complemento)], índices ambíguos)."""
+    if df is None or df.empty:
+        return [], set()
+    inf = pd.to_numeric(df["Valor informado"], errors="coerce")
+    pago = pd.to_numeric(df["Valor pago"], errors="coerce").fillna(0)
+    falta = (pd.to_numeric(df["Valor da glosa"], errors="coerce").fillna(0)
+             + pd.to_numeric(df["Diferença sem justificativa"], errors="coerce").fillna(0))
+    cod = df["Código"].fillna("").astype(str).str.strip()
+    cand = inf.notna() & (inf > TOL) & (pago > TOL) & (falta > TOL) & cod.ne("") & cod.ne("-")
+    if "Vínculo" in df.columns:
+        cand &= df["Vínculo"].fillna("").astype(str).str.strip().eq("")
+    if not cand.any():
+        return [], set()
+    partes = [df["Nome do paciente"].map(_norm), cod, df["Data do evento"].astype(str)]
+    if "Operadora" in df.columns:
+        partes.append(df["Operadora"].map(_norm))
+    chave = partes[0].str.cat(partes[1:], sep="|")[cand]
+    rep = chave[chave.duplicated(keep=False)]
+    pares_validos = []
+    for _, idx in rep.groupby(rep).groups.items():
+        idx = list(idx)
+        for x in range(len(idx)):
+            for y in range(x + 1, len(idx)):
+                i, j = idx[x], idx[y]
+                if grupo is not None and grupo[i] == grupo[j]:
+                    continue
+                if exigir_em is not None and grupo is not None and grupo[i] not in exigir_em and grupo[j] not in exigir_em:
+                    continue
+                if abs(inf[i] - inf[j]) > TOL or abs(pago[i] + pago[j] - inf[i]) > TOL:
+                    continue
+                if str(df.at[i, "Doc Original"]) == str(df.at[j, "Doc Original"]) and str(df.at[i, "Doc Original"]) not in ("", "-"):
+                    continue  # mesma guia em créditos diferentes: ver encontrar_mesma_guia
+                pares_validos.append((i, j))
+    uso = {}
+    for i, j in pares_validos:
+        uso[i] = uso.get(i, 0) + 1
+        uso[j] = uso.get(j, 0) + 1
+    ambiguos = {k for k, n in uso.items() if n > 1}
+    pares = []
+    for i, j in pares_validos:
+        if i in ambiguos or j in ambiguos:
+            continue
+        # principal = o pagamento que chegou primeiro (empate: o maior)
+        ki = (_data_ord(df.at[i, "Data de pagamento"]), -pago[i], i)
+        kj = (_data_ord(df.at[j, "Data de pagamento"]), -pago[j], j)
+        pares.append((i, j) if ki <= kj else (j, i))
+    return pares, ambiguos
+
+
+STATUS_GLOSA_MANTIDA = "Glosa mantida em novo crédito"
+
+
+def encontrar_mesma_guia(df, grupo, exigir_em=None):
+    """A MESMA guia (guia + procedimento + data + paciente) em arquivos diferentes do histórico: é o mesmo
+    atendimento aparecendo em outros créditos. Para cada grupo (2 ou mais créditos), o primeiro crédito é o
+    principal e os seguintes são ligados a ele. Tipos, pelo total pago:
+      'recurso'      glosado e pago depois (glosa revertida)
+      'partes'       pago em parte e o restante depois
+      'duplicidade'  pago por inteiro mais de uma vez
+      'glosa'        nada foi pago (glosa mantida)
+    Outros casos ficam para conferir.
+    Retorna (lista de (principal, [seguintes], tipo, valor de referência), índices para conferir)."""
+    if df is None or df.empty:
+        return [], set()
+    doc = df["Doc Original"].fillna("").astype(str).str.strip()
+    cod = df["Código"].fillna("").astype(str).str.strip()
+    ok = doc.ne("") & doc.ne("-") & cod.ne("") & cod.ne("-") & df["Vínculo"].fillna("").astype(str).eq("")
+    if not ok.any():
+        return [], set()
+    partes = [doc, cod, df["Data do evento"].astype(str), df["Nome do paciente"].map(_norm)]
+    if "Operadora" in df.columns:
+        partes.append(df["Operadora"].map(_norm))
+    chave = partes[0].str.cat(partes[1:], sep="|")[ok]
+    rep = chave[chave.duplicated(keep=False)]
+    inf = pd.to_numeric(df["Valor informado"], errors="coerce")
+    pago = pd.to_numeric(df["Valor pago"], errors="coerce").fillna(0)
+    res, conferir = [], set()
+    for _, idx in rep.groupby(rep).groups.items():
+        idx = list(idx)
+        if len({grupo[i] for i in idx}) < 2:
+            continue
+        if exigir_em is not None and not any(grupo[i] in exigir_em for i in idx):
+            continue
+        ordem = sorted(idx, key=lambda k: (_data_ord(df.at[k, "Data de pagamento"]), k))
+        a, seguintes = ordem[0], ordem[1:]
+        ref = inf[a]
+        # recurso pago com a rede (Nacional/Flex) diferente da deduzida quando veio a glosa: vale o valor pago
+        pagos_inteiros = [k for k in seguintes if pago[k] > TOL and pd.notna(inf[k]) and abs(pago[k] - inf[k]) <= TOL]
+        if (pago[a] <= TOL and len(pagos_inteiros) == 1 and pd.notna(ref)
+                and all(pago[k] <= TOL for k in seguintes if k not in pagos_inteiros)
+                and df.get("Rede") is not None and str(df.at[a, "Rede"]) != str(df.at[pagos_inteiros[0], "Rede"])):
+            ref = inf[pagos_inteiros[0]]
+            inf = inf.copy()
+            inf[a] = ref
+        if pd.isna(ref) or any(pd.isna(inf[k]) or abs(inf[k] - ref) > TOL for k in seguintes):
+            conferir.update(idx)
+            continue
+        total = float(pago[ordem].sum())
+        if total <= TOL:
+            tipo = "glosa"
+        elif abs(total - ref) <= TOL and pago[a] < ref - TOL:
+            tipo = "recurso" if pago[a] <= TOL else "partes"
+        elif total >= 2 * ref - TOL and pago[a] >= ref - TOL:
+            tipo = "duplicidade"
+        else:
+            conferir.update(idx)
+            continue
+        res.append((a, seguintes, tipo, ref))
+    return res, conferir
+
+
+def aplicar_vinculo_guia(df, a, seguintes, tipo, origem=None, ref=None):
+    """Liga as aparições da mesma guia em créditos/arquivos diferentes, sem apagar nenhuma: o resultado
+    fica igual ao de quando todos os créditos estão no mesmo arquivo. origem: função índice -> texto.
+    Devolve os valores originais de todas as linhas envolvidas (para poder desfazer)."""
+    if isinstance(seguintes, (int, float)) or not hasattr(seguintes, "__iter__"):
+        seguintes = [seguintes]
+    origem = origem or (lambda k: "")
+    campos = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
+              "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"]
+    orig = {k: {c: df.at[k, c] if c in df.columns else None for c in campos} for k in [a] + list(seguintes)}
+    onde = lambda k: f" ({origem(k)})" if origem(k) else ""
+    if ref is not None and pd.notna(ref) and abs(_num(df.at[a, "Valor informado"]) - ref) > TOL:
+        df.at[a, "Valor informado"] = round(float(ref), 2)  # rede confirmada pelo pagamento posterior
+    pa = _num(df.at[a, "Valor pago"])
+    dt_a = df.at[a, "Data de pagamento"]
+    pagos_depois = [(k, _num(df.at[k, "Valor pago"])) for k in seguintes]
+    alertas_a = [x for x in str(df.at[a, "Alertas"] or "").split("; ")
+                 if x and not x.startswith(("Pago ", "Sem valor", "Possível pagamento em partes"))]
+    for k, pk in pagos_depois:  # as aparições seguintes nunca contam como atendimento novo
+        df.at[k, "Valor informado"] = 0.0
+        df.at[k, "Valor da glosa"] = 0.0
+        df.at[k, "Diferença sem justificativa"] = 0.0
+        df.at[k, "Complemento recebido"] = 0.0
+        df.at[k, "Alertas"] = ""
+        if str(df.at[k, "Motivo da glosa"] or "").startswith(_MOTIVOS_GERADOS):
+            df.at[k, "Motivo da glosa"] = ""
+    lista = "; ".join(f"{_br_valor(pk)} em {df.at[k, 'Data de pagamento']}{onde(k)}" for k, pk in pagos_depois)
+    if tipo in ("recurso", "partes"):
+        df.at[a, "Valor da glosa"] = 0.0
+        df.at[a, "Diferença sem justificativa"] = 0.0
+        df.at[a, "Status da glosa"] = "Sem glosa" if tipo == "recurso" else STATUS_PAGO_EM_PARTES
+        if str(df.at[a, "Motivo da glosa"] or "").startswith(_MOTIVOS_GERADOS):
+            df.at[a, "Motivo da glosa"] = ""
+        nota = ("Glosa revertida: pago depois" if tipo == "recurso" else "Restante pago depois na mesma guia")
+        df.at[a, "Vínculo"] = f"{nota}: {lista}"
+        df.at[a, "Alertas"] = "; ".join(alertas_a + [nota])
+        for k, pk in pagos_depois:
+            df.at[k, "Status da glosa"] = STATUS_COMPLEMENTO if pk > TOL else STATUS_GLOSA_MANTIDA
+            df.at[k, "Vínculo"] = f"Mesma guia do crédito de {dt_a}{onde(a)}"
+    elif tipo == "duplicidade":
+        nota = "Possível pagamento em duplicidade pelo plano"
+        df.at[a, "Vínculo"] = f"Pago de novo: {lista}"
+        df.at[a, "Alertas"] = "; ".join(alertas_a + [nota])
+        for k, pk in pagos_depois:
+            df.at[k, "Status da glosa"] = STATUS_DUPLICIDADE if pk > TOL else STATUS_GLOSA_MANTIDA
+            df.at[k, "Vínculo"] = f"Mesma guia já paga em {dt_a} ({_br_valor(pa)}){onde(a)}"
+    else:  # glosa mantida
+        nota = "Glosa mantida em novo crédito"
+        df.at[a, "Vínculo"] = f"{nota}: {lista}"
+        df.at[a, "Alertas"] = "; ".join(alertas_a + [nota])
+        for k, _ in pagos_depois:
+            df.at[k, "Status da glosa"] = STATUS_GLOSA_MANTIDA
+            df.at[k, "Vínculo"] = f"Mesma guia já glosada em {dt_a}{onde(a)}"
+    return orig
+
+
+def _br_valor(v):
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def aplicar_vinculo(df, a, b, origem_a="", origem_b=""):
+    """Liga o principal (a) e o complemento (b) SEM juntar as linhas: o principal fica sem glosa e mostra o
+    complemento recebido; o complemento deixa de contar como atendimento novo (valor informado zero).
+    Modifica df no lugar e devolve os valores originais das duas linhas (para poder desfazer)."""
+    campos = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
+              "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"]
+    orig = {k: {c: df.at[k, c] if c in df.columns else None for c in campos} for k in (a, b)}
+    pago_a, pago_b = _num(df.at[a, "Valor pago"]), _num(df.at[b, "Valor pago"])
+    dt_a, dt_b = df.at[a, "Data de pagamento"], df.at[b, "Data de pagamento"]
+    guia_a, guia_b = str(df.at[a, "Doc Original"]), str(df.at[b, "Doc Original"])
+    motivo_a = str(df.at[a, "Motivo da glosa"] or "")
+    justificada = bool(motivo_a.strip()) and not motivo_a.startswith(_MOTIVOS_GERADOS)
+    onde_b = f" (guia {guia_b}{', ' + origem_b if origem_b else ''})"
+    onde_a = f" (guia {guia_a}{', ' + origem_a if origem_a else ''})"
+
+    df.at[a, "Valor da glosa"] = 0.0
+    df.at[a, "Diferença sem justificativa"] = 0.0
+    df.at[a, "Status da glosa"] = STATUS_PAGO_EM_PARTES
+    df.at[a, "Complemento recebido"] = round(pago_b, 2)
+    df.at[a, "Vínculo"] = f"Complemento de {_br_valor(pago_b)} em {dt_b}{onde_b}"
+    if not justificada:
+        df.at[a, "Motivo da glosa"] = ""
+    alertas = [x for x in str(df.at[a, "Alertas"] or "").split("; ")
+               if x and not x.startswith(("Pago ", "Sem valor", "Possível pagamento em partes"))]
+    nota = f"Pago em 2 partes: {_br_valor(pago_a)} em {dt_a} + {_br_valor(pago_b)} em {dt_b}"
+    df.at[a, "Alertas"] = "; ".join(alertas + [("Glosa revertida. " if justificada else "") + nota])
+
+    df.at[b, "Valor informado"] = 0.0
+    df.at[b, "Valor da glosa"] = 0.0
+    df.at[b, "Diferença sem justificativa"] = 0.0
+    df.at[b, "Status da glosa"] = STATUS_COMPLEMENTO
+    df.at[b, "Complemento recebido"] = 0.0
+    df.at[b, "Vínculo"] = f"Complemento do pagamento de {_br_valor(pago_a)} em {dt_a}{onde_a}"
+    if str(df.at[b, "Motivo da glosa"] or "").startswith(_MOTIVOS_GERADOS):
+        df.at[b, "Motivo da glosa"] = ""
+    df.at[b, "Alertas"] = ""
+    return orig
+
+
+def _marcar_ambiguos(df, ambiguos):
+    for k in ambiguos:
+        atual = [x for x in str(df.at[k, "Alertas"] or "").split("; ") if x and x != ALERTA_POSSIVEL_PARTES]
+        df.at[k, "Alertas"] = "; ".join(atual + [ALERTA_POSSIVEL_PARTES])
+
+
 def _juntar_complementos(out):
-    """Pagamento em duas partes: o plano paga parte do atendimento numa guia e o complemento em outra guia
-    (meses depois), para o mesmo paciente, procedimento e data. Se as duas partes somam o valor de referência,
-    vira um atendimento só, sem glosa, com o alerta de pagamento em partes."""
+    """Liga, dentro do mesmo arquivo, os pagamentos feitos em duas partes (ver encontrar_pares)."""
     if out.empty:
         return out, 0
-    chave = (out["Nome do paciente"].map(_norm) + "|" + out["Código"].astype(str) + "|" + out["Data do evento"].astype(str))
-    rep = chave.duplicated(keep=False) & out["Código"].astype(str).str.strip().ne("") & out["Código"].ne("-")
-    if not rep.any():
-        return out, 0
     out = out.copy()
-    remover = set()
-    for _, g in out[rep].groupby(chave[rep], sort=False):
-        idx = sorted(g.index, key=lambda i: (pd.to_datetime(out.at[i, "Data de pagamento"], format="%d/%m/%Y",
-                                                            errors="coerce") or pd.Timestamp.max, i))
-        for a in idx:
-            if a in remover:
-                continue
-            inf_a, pago_a = out.at[a, "Valor informado"], out.at[a, "Valor pago"]
-            falta_a = (out.at[a, "Valor da glosa"] or 0) + (out.at[a, "Diferença sem justificativa"] or 0)
-            if pd.isna(inf_a) or falta_a <= TOL or pago_a <= TOL:
-                continue
-            for b in idx:
-                if b == a or b in remover:
-                    continue
-                pago_b, inf_b = out.at[b, "Valor pago"], out.at[b, "Valor informado"]
-                if pago_b <= TOL or pd.isna(inf_b) or abs(inf_b - inf_a) > TOL:
-                    continue
-                if abs(pago_a + pago_b - inf_a) > TOL:
-                    continue
-                data_b = out.at[b, "Data de pagamento"]
-                out.at[a, "Valor pago"] = round(pago_a + pago_b, 2)
-                out.at[a, "Valor da glosa"] = 0.0
-                out.at[a, "Diferença sem justificativa"] = 0.0
-                out.at[a, "Status da glosa"] = "Sem glosa"
-                docs = [d for d in (str(out.at[a, "Doc Original"]), str(out.at[b, "Doc Original"])) if d and d != "-"]
-                out.at[a, "Doc Original"] = "; ".join(dict.fromkeys(docs)) or "-"
-                motivo_a = str(out.at[a, "Motivo da glosa"] or "")
-                if motivo_a.startswith(("Glosa Silenciosa", "Quantidade liberada menor")):
-                    out.at[a, "Motivo da glosa"] = ""
-                alerta = (f"Pago em 2 partes: {pago_a:.2f} em {out.at[a, 'Data de pagamento']} + {pago_b:.2f} em "
-                          f"{data_b} (complemento)").replace(".", ",")
-                if motivo_a and not motivo_a.startswith(("Glosa Silenciosa", "Quantidade liberada menor")):
-                    alerta = "Glosa revertida. " + alerta
-                antigos = [x for x in str(out.at[a, "Alertas"] or "").split("; ")
-                           if x and not x.startswith(("Pago ", "Sem valor"))]
-                out.at[a, "Alertas"] = "; ".join(antigos + [alerta])
-                if data_b and data_b != "-":
-                    out.at[a, "Data de pagamento"] = data_b
-                remover.add(b)
-                break
-    return out.drop(index=list(remover)).reset_index(drop=True), len(remover)
+    for c, v in (("Complemento recebido", 0.0), ("Vínculo", "")):
+        if c not in out.columns:
+            out[c] = v
+    pares, ambiguos = encontrar_pares(out)
+    for a, b in pares:
+        aplicar_vinculo(out, a, b)
+    _marcar_ambiguos(out, ambiguos)
+    return out, len(pares)
 
 
 def finalizar(linhas, operadora, conhecimento=None):

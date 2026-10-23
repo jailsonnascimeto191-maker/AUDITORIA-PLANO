@@ -188,7 +188,8 @@ def sugerir_valores(itens, minimo_mes=5):
     qs, ql, pago, glosa = num("Quantidade"), num("Quantidade liberada"), num("Valor pago"), num("Valor da glosa")
     texto = lambda c: d.get(c, pd.Series("", index=d.index)).fillna("").astype(str).str.strip()
     cheio = (texto("Motivo da glosa").eq("") & texto("Código da glosa").eq("") & (glosa.fillna(0) <= 0.005)
-             & (ql.isna() | qs.isna() | (ql >= qs)) & (pago > 0) & texto("Código").ne("") & texto("Código").ne("-"))
+             & (ql.isna() | qs.isna() | (ql >= qs)) & (pago > 0) & texto("Código").ne("") & texto("Código").ne("-")
+             & ~texto("Status da glosa").isin([me.STATUS_PAGO_EM_PARTES, me.STATUS_COMPLEMENTO]))
     d = d[cheio].copy()
     if d.empty:
         return pd.DataFrame(columns=cols)

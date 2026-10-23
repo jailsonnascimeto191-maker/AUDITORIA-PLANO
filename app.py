@@ -1537,6 +1537,47 @@ if menu == "Painel":
         secao("Base cadastral")
         kpis_cadastro()
 
+        with st.expander("Pagamentos em partes (complementos)"):
+            st.caption("Quando o plano paga um atendimento em duas partes (em guias e meses diferentes), o sistema liga "
+                       "as duas, sem apagar nenhuma, só quando a soma fecha no centavo com o valor cadastrado e o "
+                       "paciente, o procedimento e a data são os mesmos. Na dúvida, nada é ligado.")
+            vinc, pend, poss = motor_historico.pagamentos_em_partes(ops_sel or None)
+            dup = motor_historico.possiveis_duplicidades(ops_sel or None)
+            t1, t2, t3, t4 = st.tabs([f"Ligados ({len(vinc)})", f"Pagos a menor, sem justificativa ({len(pend)})",
+                                      f"Possíveis, para conferir ({len(poss)})",
+                                      f"Possível pagamento em duplicidade ({len(dup)})"])
+            with t4:
+                st.caption("A mesma guia (mesmo paciente, procedimento e data) paga por inteiro em mais de um crédito. "
+                           "Confira se o plano pagou duas vezes ou se o demonstrativo repete o pagamento.")
+                if dup.empty:
+                    st.info("Nenhum.")
+                else:
+                    st.caption(f"Valor pago a mais: {brl(float(dup['Pago a mais'].sum()))}")
+                    tabela(dup)
+                    baixar(dup, "possivel_duplicidade", key="dl_dup")
+            with t1:
+                if vinc.empty:
+                    st.info("Nenhum pagamento em partes ligado.")
+                else:
+                    tabela(vinc)
+                    baixar(vinc, "pagamentos_em_partes", key="dl_partes")
+            with t2:
+                st.caption("Atendimentos pagos abaixo do valor cadastrado sem justificativa do plano: podem estar "
+                           "aguardando o complemento ou ser cobrados.")
+                if pend.empty:
+                    st.info("Nenhum.")
+                else:
+                    st.caption(f"Total a receber: {brl(float(pend['Falta receber'].sum()))}")
+                    tabela(pend)
+                    baixar(pend, "pagos_a_menor", key="dl_pend")
+            with t3:
+                st.caption("O complemento combina com mais de um pagamento (ex.: duas guias iguais no mesmo dia). "
+                           "O sistema não escolhe sozinho.")
+                if poss.empty:
+                    st.info("Nenhum.")
+                else:
+                    tabela(poss)
+
         with st.expander("Demonstrativos processados"):
             lista = motor_historico.listar_demonstrativos()
             tabela(lista.drop(columns=["id"]))
@@ -1580,12 +1621,18 @@ elif menu == "Casa das Máquinas":
             operadora = plano_sel
         df_res["Operadora"] = operadora
         try:
-            _, substituiu, ignorados = motor_historico.salvar_demonstrativo(
+            did, substituiu, ignorados = motor_historico.salvar_demonstrativo(
                 df_res, nome_arq, motor_historico.hash_arquivo(dados), str(st.session_state.usuario_atual), operadora)
             aviso = " A versão anterior deste arquivo foi substituída no histórico." if substituiu else " Guardado no histórico."
             if ignorados:
                 aviso += (f" {ignorados} atendimento(s) já estavam no histórico por outro arquivo e não foram "
                           "contados de novo.")
+            ligados, possiveis = motor_historico.vincular_historico(operadora, did)
+            if ligados:
+                aviso += (f" {ligados} atendimento(s) foram ligados a pagamentos de outros arquivos do histórico "
+                          "(complementos, recursos e pagamentos repetidos; veja no Painel → Pagamentos em partes).")
+            if possiveis:
+                aviso += f" {possiveis} caso(s) ficaram para conferir."
         except Exception as e:
             aviso = f" Não foi possível guardar no histórico: {e}"
         registrar_log("Demonstrativo reprocessado" if reprocessando else "Demonstrativo processado",
