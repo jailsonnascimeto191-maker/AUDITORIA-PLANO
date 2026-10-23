@@ -1,5 +1,6 @@
 """
-Motor de relatórios do Espaço Saúde: gera Excel (.xlsx) e PDF a partir de uma "especificação" (spec).
+Motor de relatórios: gera Excel (.xlsx) e PDF a partir de uma "especificação" (spec).
+O nome da clínica (CLINICA) é definido pelo app a partir das configurações; a marca vem de marca.py.
 
 Uso:
     spec = spec_producao(...)  /  spec_glosas(...)  /  spec_faturamento(...)
@@ -25,11 +26,19 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.properties import PageSetupProperties
 
+import marca
 import motor_cruzamento as mc
 import motor_extracao as me
 
-# Paleta (mesma do app)
-NAVY, TEAL, TEAL_CLARO, CINZA, LINHA = "0F2A43", "0E7C86", "E3F1F2", "F3F5F8", "D5DBE3"
+# Paleta (a mesma do app, definida em marca.py)
+_h = lambda k: marca.C[k].lstrip("#").upper()
+NAVY, TEAL, TEAL_CLARO, CINZA, LINHA = _h("musgo"), _h("faixa"), "F7EFE4", "F2F4F3", _h("linha")
+CLINICA = ""  # nome da clínica cliente; o app preenche a cada uso
+
+
+def _rodape_texto():
+    partes = [p for p in (CLINICA, f"Gerado pelo {marca.NOME}") if p]
+    return "  |  ".join(partes)
 VERDE, AMBAR, VERMELHO = "E6F4EA", "FFF4D6", "FDE7E7"
 FONTE = "Arial"
 FMT_MOEDA = '"R$" #,##0.00'
@@ -158,7 +167,7 @@ def _configurar_impressao(ws, linha_cab=None):
     ws.page_margins.left = ws.page_margins.right = 0.4
     if linha_cab:
         ws.print_title_rows = f"{linha_cab}:{linha_cab}"
-    ws.oddFooter.center.text = "Espaço Saúde  |  Página &P de &N"
+    ws.oddFooter.center.text = f"{_rodape_texto()}  |  Página &P de &N"
 
 
 def _escrever_tabela(ws, df, linha_ini, d, formatar_status=True, totais=True):
@@ -228,7 +237,14 @@ def _escrever_tabela(ws, df, linha_ini, d, formatar_status=True, totais=True):
     return fim
 
 
+def _com_clinica(spec):
+    if not CLINICA or any(r == "Clínica" for r, _ in spec.get("info", [])):
+        return spec
+    return {**spec, "info": [("Clínica", CLINICA)] + list(spec.get("info", []))}
+
+
 def gerar_excel(spec):
+    spec = _com_clinica(spec)
     wb = Workbook()
     usados = set()
 
@@ -304,6 +320,7 @@ def gerar_excel(spec):
 # PDF
 # --------------------------------------------------------------------------
 def gerar_pdf(spec):
+    spec = _com_clinica(spec)
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_RIGHT
     from reportlab.lib.pagesizes import A4, landscape
@@ -330,12 +347,14 @@ def gerar_pdf(spec):
     story = []
 
     # Faixa de título
+    marca_pdf = Paragraph(f"<font color='{marca.C['destaque']}' size='17'><b>{escape(marca.NOME.lower())}</b></font>",
+                          ParagraphStyle("m", leading=20, alignment=TA_RIGHT))
     t_titulo = Table(
         [[Paragraph(f"<font color='white' size='16'><b>{escape(spec['titulo'])}</b></font>",
-                    ParagraphStyle("t", leading=20))],
-         [Paragraph(f"<font color='#C9D6E2' size='8.5'>{escape(spec.get('subtitulo', ''))}</font>",
-                    ParagraphStyle("t2", leading=11))]],
-        colWidths=[util])
+                    ParagraphStyle("t", leading=20)), marca_pdf],
+         [Paragraph(f"<font color='#CFE0D9' size='8.5'>{escape(spec.get('subtitulo', ''))}</font>",
+                    ParagraphStyle("t2", leading=11)), ""]],
+        colWidths=[util * 0.8, util * 0.2])
     t_titulo.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), c_navy), ("LEFTPADDING", (0, 0), (-1, -1), 10),
         ("TOPPADDING", (0, 0), (0, 0), 9), ("BOTTOMPADDING", (0, 1), (0, 1), 9),
@@ -455,7 +474,7 @@ def gerar_pdf(spec):
         canvas.saveState()
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#637083"))
-        canvas.drawString(margem, 7 * mm, f"Espaço Saúde  |  {spec['titulo']}  |  Emitido em {_agora()}")
+        canvas.drawString(margem, 7 * mm, f"{_rodape_texto()}  |  {spec['titulo']}  |  Emitido em {_agora()}")
         canvas.drawRightString(pw - margem, 7 * mm, f"Página {doc.page}")
         canvas.setStrokeColor(c_linha)
         canvas.line(margem, 10 * mm, pw - margem, 10 * mm)
@@ -464,7 +483,7 @@ def gerar_pdf(spec):
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=margem, rightMargin=margem,
                             topMargin=margem, bottomMargin=15 * mm, title=spec["titulo"],
-                            author="Espaço Saúde")
+                            author=CLINICA or marca.NOME, creator=marca.NOME)
     doc.build(story, onFirstPage=rodape, onLaterPages=rodape)
     return buf.getvalue()
 

@@ -1,5 +1,5 @@
 """
-Motor de cruzamento de dados do sistema Espaço Saúde.
+Motor de cruzamento de dados do sistema.
 
 Três usos principais:
 

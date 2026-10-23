@@ -107,6 +107,14 @@ def _downloads(H, res, base, chave):
                        key=f"dl_p_{chave}", **H.FULL_DL)
 
 
+def _vazio(H, titulo, texto, expressao="normal", item=None):
+    fn = getattr(H, "vazio", None)
+    if fn:
+        fn(titulo, texto, expressao, item)
+    else:
+        st.info(f"{titulo}. {texto}")
+
+
 def _log(H, acao, detalhe):
     fn = getattr(H, "registrar_log", None)
     if fn:
@@ -125,7 +133,8 @@ def render_producao(H):
     if not profs.empty:
         profs = profs[profs["ativo"] == 1]
     if profs.empty:
-        st.info("Cadastre ao menos um profissional ativo na área **Cadastros** para usar esta página.")
+        _vazio(H, "Cadastre a equipe primeiro", "Cadastre ao menos um profissional ativo em Cadastros para montar o "
+                  "relatório de produção.", "normal", "prancheta")
         return
 
     rotulos = {int(r.id): f"{r.nome} — {r.registro} ({r.especialidade.title()})" for r in profs.itertuples()}
@@ -158,7 +167,7 @@ def render_producao(H):
         if arq_ctrl is None:
             st.warning("Envie o controle de atendimento do profissional.")
         else:
-            with st.spinner("Lendo o controle, cruzando com o demonstrativo e montando o relatório..."):
+            with H.carregando("Lendo o controle, cruzando com o demonstrativo e montando o relatório..."):
                 ctrl, erro = mc.ler_controle_atendimento(arq_ctrl, plano_padrao=plano_padrao)
                 if erro:
                     st.error(f"Controle de atendimento: {erro}")
@@ -261,7 +270,7 @@ def render_glosas(H):
         plano_op = st.selectbox("Operadora / plano de saúde", H.PLANOS_SAUDE, key="glo_plano")
 
     if st.button("Gerar relatório de glosas", type="primary", **H.FULL_BTN):
-        with st.spinner("Lendo o(s) demonstrativo(s) e montando o relatório..."):
+        with H.carregando("Lendo o(s) demonstrativo(s) e montando o relatório..."):
             erros, resumo_arqs = [], pd.DataFrame()
             if origem.startswith("Enviar"):
                 if not arqs:
@@ -294,7 +303,7 @@ def render_glosas(H):
         st.warning(e)
     glosas = base["glosas"]
     if glosas.empty:
-        st.success("Nenhuma glosa encontrada nos demonstrativos analisados.")
+        _vazio(H, "Nenhuma glosa encontrada", "Os demonstrativos analisados não têm itens glosados.", "feliz", "moeda")
         _exibir(H, base["resumo_arqs"])
         return
 
@@ -318,7 +327,7 @@ def render_glosas(H):
     chave = (len(vis), round(float(vis["Valor da glosa"].sum()), 2), tuple(sel_ops), busca.strip())
     cache = st.session_state.get("rel_glosas")
     if not cache or cache["chave"] != chave:
-        with st.spinner("Montando Excel e PDF..."):
+        with H.carregando("Montando Excel e PDF..."):
             cache = dict(chave=chave, xlsx=mr.gerar_excel(spec), pdf=mr.gerar_pdf(spec))
         st.session_state["rel_glosas"] = cache
         _log(H, "Relatório de glosas", f"{len(vis)} itens | {', '.join(base['nomes'])}")
@@ -372,7 +381,7 @@ def render_faturamento(H):
         if not arqs_fat or not arqs_demo:
             st.warning("Envie o faturamento e o demonstrativo de pagamento.")
         else:
-            with st.spinner("Lendo os arquivos e conferindo guia por guia..."):
+            with H.carregando("Lendo os arquivos e conferindo guia por guia..."):
                 partes, erros = [], []
                 for a in arqs_fat:
                     f, erro = mc.ler_faturamento(a, plano_padrao=plano_fat)

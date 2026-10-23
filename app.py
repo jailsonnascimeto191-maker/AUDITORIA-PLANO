@@ -3,17 +3,19 @@ import io
 import inspect
 import os
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pandas as pd
 import streamlit as st
 
+import marca
+
+_ICONE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icone.png")
 # set_page_config PRECISA ser o primeiro comando do Streamlit no script.
 st.set_page_config(
-    page_title="Espaço Saúde | Auditoria & Repasses",
-    page_icon=(os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icone.png")
-               if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icone.png"))
-               else "🏥"),
+    page_title=f"{marca.NOME} | {marca.SLOGAN}",
+    page_icon=_ICONE if os.path.exists(_ICONE) else None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -23,6 +25,7 @@ import motor_seguranca  # noqa: E402
 import motor_extracao  # noqa: E402
 import motor_conhecimento  # noqa: E402
 import motor_historico  # noqa: E402
+import manual  # noqa: E402
 import paginas_relatorios  # noqa: E402
 
 
@@ -139,6 +142,7 @@ def init_db():
                 criado_por TEXT,
                 UNIQUE (registro, especialidade))"""
         )
+        conn.execute("CREATE TABLE IF NOT EXISTS configuracoes (chave TEXT PRIMARY KEY, valor TEXT)")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS log_alteracoes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,6 +182,22 @@ def init_db():
                    WHERE valor_profissional IS NOT NULL AND valor_profissional > 0"""
             )
             conn.commit()
+
+
+def obter_config(chave, padrao=""):
+    try:
+        with conectar() as conn:
+            r = conn.execute("SELECT valor FROM configuracoes WHERE chave = ?", (chave,)).fetchone()
+        return r[0] if r and r[0] is not None else padrao
+    except banco.Error:
+        return padrao
+
+
+def salvar_config(chave, valor):
+    with conectar() as conn:
+        conn.execute("DELETE FROM configuracoes WHERE chave = ?", (chave,))
+        conn.execute("INSERT INTO configuracoes (chave, valor) VALUES (?, ?)", (chave, valor))
+        conn.commit()
 
 
 def registrar_log(acao, detalhe):
@@ -694,115 +714,124 @@ if _erro_init:
 # ─────────────────────────────────────────────────────────────
 # Tema / CSS
 # ─────────────────────────────────────────────────────────────
-# Logotipo (desenhado em SVG: fica igual em qualquer computador ou celular, ao contrário de um emoji)
-LOGO_SVG = (
-    "<svg viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg' role='img' aria-label='Espaço Saúde'>"
-    "<rect width='40' height='40' rx='10' fill='#0E7C86'/>"
-    "<rect x='16.5' y='9' width='7' height='22' rx='2' fill='#FFFFFF'/>"
-    "<rect x='9' y='16.5' width='22' height='7' rx='2' fill='#FFFFFF'/>"
-    "<circle cx='30' cy='30' r='5.2' fill='#0F2A43'/>"
-    "<path d='M27.6 30.1l1.6 1.6 3.2-3.3' stroke='#4FD1C5' stroke-width='1.6' fill='none' "
-    "stroke-linecap='round' stroke-linejoin='round'/>"
-    "</svg>"
-)
-
+# Tema visual: cores e fontes vêm de marca.py
+LOGO_SVG = marca.logo_svg(36)
+_K = marca.C
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Figtree:wght@400;500;600;700&display=swap');
 
 :root {
-  --navy: #0F2A43;
-  --navy-2: #173a5a;
-  --teal: #0E7C86;
-  --teal-dark: #0A5F67;
-  --bg: #F3F5F8;
-  --card: #FFFFFF;
-  --line: #E1E6EC;
-  --ink: #1B2733;
-  --muted: #637083;
+  --musgo: %(musgo)s; --musgo-2: %(musgo_2)s; --musgo-3: %(musgo_3)s;
+  --caramelo: %(caramelo)s; --faixa: %(faixa)s; --destaque: %(destaque)s; --pele: %(pele)s;
+  --bg: %(fundo)s; --card: #FFFFFF; --line: %(linha)s; --ink: %(tinta)s; --muted: %(suave)s;
+  --ok: %(ok)s; --glosa: %(glosa)s;
+  --titulo: 'Bricolage Grotesque', 'Figtree', system-ui, sans-serif;
 }
 
-html, body, .stApp, [class*="css"] { font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+html, body, .stApp, [class*="css"], .stMarkdown, input, textarea, select, button { font-family: 'Figtree', system-ui, sans-serif; }
 .stApp { background: var(--bg); color: var(--ink); }
 #MainMenu, footer { visibility: hidden; }
 header[data-testid="stHeader"] { background: transparent; }
-.block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1400px; }
+.block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1360px; }
+*:focus-visible { outline: 3px solid var(--destaque) !important; outline-offset: 2px; }
 
-/* Sidebar */
-[data-testid="stSidebar"] { background: var(--navy); border-right: 0; }
-[data-testid="stSidebar"] * { color: #DCE6F0; }
+/* Menu lateral */
+[data-testid="stSidebar"] { background: var(--musgo); border-right: 0; }
+[data-testid="stSidebar"] * { color: #E3ECE8; }
 [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.12); }
 [data-testid="stSidebar"] .stButton button {
-  background: transparent; border: 1px solid rgba(255,255,255,.25); color: #fff;
+  background: transparent; border: 1px solid rgba(255,255,255,.22); color: #fff;
 }
-[data-testid="stSidebar"] .stButton button:hover { background: rgba(255,255,255,.1); border-color: #fff; }
-
-/* Menu lateral (botões agrupados por seção) */
-.nav-secao { font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
-  color: #7F96AD; margin: 14px 4px 4px; }
+[data-testid="stSidebar"] .stButton button:hover { background: rgba(255,255,255,.08); border-color: #fff; }
+.nav-secao { font-family: var(--titulo); font-size: 12.5px; font-weight: 600; color: #A9C2B9; margin: 16px 6px 4px; }
 [data-testid="stSidebar"] [class*="st-key-nav_"] { margin-bottom: -10px; }
 [data-testid="stSidebar"] [class*="st-key-nav_"] button {
   justify-content: flex-start; text-align: left; background: transparent; border: 0;
-  border-left: 3px solid transparent; border-radius: 8px; padding: .45rem .8rem; color: #DCE6F0;
-  min-height: 0; font-weight: 400; box-shadow: none;
+  border-radius: 10px; padding: .45rem .8rem .45rem 1.1rem; color: #E3ECE8; min-height: 0;
+  font-weight: 400; box-shadow: none; position: relative;
 }
-[data-testid="stSidebar"] [class*="st-key-nav_"] button p { font-size: 14px; text-align: left; }
+[data-testid="stSidebar"] [class*="st-key-nav_"] button p { font-size: 14.5px; text-align: left; }
 [data-testid="stSidebar"] [class*="st-key-nav_"] button:hover { background: rgba(255,255,255,.07); color: #fff; }
 [data-testid="stSidebar"] [class*="st-key-nav_"] button[kind="primary"],
 [data-testid="stSidebar"] [class*="st-key-nav_"] button[kind="primary"]:hover {
-  background: rgba(255,255,255,.12); border-left-color: #4FD1C5; color: #fff; font-weight: 600;
+  background: var(--musgo-2); color: #fff; font-weight: 600;
+}
+[data-testid="stSidebar"] [class*="st-key-nav_"] button[kind="primary"]::before {
+  content: ""; position: absolute; left: 6px; top: 50%%; width: 6px; height: 6px; margin-top: -3px;
+  border-radius: 50%%; background: var(--destaque);
 }
 
-.marca { display:flex; align-items:center; gap:10px; padding: 4px 4px 14px; }
-.marca .logo { width:36px; height:36px; flex: 0 0 36px; }
-.marca .logo svg, .login-marca .logo svg { width:100%; height:100%; display:block; }
-.marca .nome { font-weight:600; font-size:16px; line-height:1.1; color:#fff; }
-.marca .sub { font-size:11.5px; color:#9FB3C8; }
-.usuario { background: rgba(255,255,255,.07); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
-.usuario b { color:#fff; }
-.usuario span { font-size:12px; color:#9FB3C8; }
+.vg-marca { display: inline-flex; align-items: center; gap: 10px; }
+.vg-marca svg { display: block; flex: 0 0 auto; }
+.vg-marca-nome { font-family: var(--titulo); font-weight: 700; font-size: 26px; letter-spacing: -.02em; line-height: 1; }
+.marca-menu { padding: 2px 4px 6px; }
+.marca-menu .sub { font-size: 12px; color: #A9C2B9; margin: 6px 2px 14px; }
+.usuario { background: rgba(255,255,255,.07); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.usuario b { color: #fff; }
+.usuario span { font-size: 12px; color: #A9C2B9; }
 
 /* Cabeçalho de página */
-.pagina-titulo { font-size: 26px; font-weight: 600; color: var(--ink); margin: 0; }
-.pagina-sub { color: var(--muted); font-size: 14px; margin: 4px 0 22px; }
-.secao-titulo { font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
-  color: var(--muted); margin: 22px 0 8px; }
+.pagina-titulo { font-family: var(--titulo); font-size: 30px; font-weight: 700; letter-spacing: -.02em;
+  color: var(--ink); margin: 0; line-height: 1.15; }
+.pagina-sub { color: var(--muted); font-size: 15px; margin: 6px 0 24px; max-width: 72ch; }
+.secao-titulo { font-family: var(--titulo); font-size: 17px; font-weight: 600; color: var(--ink); margin: 26px 0 10px; }
 
-/* Cartões e métricas */
-[data-testid="stMetric"] {
-  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-  padding: 16px 18px; border-top: 3px solid var(--teal);
-}
+/* Indicadores: número grande, sem moldura pesada */
+[data-testid="stMetric"] { background: var(--card); border-radius: 14px; padding: 14px 18px; border: 1px solid var(--line); }
 [data-testid="stMetricLabel"] { color: var(--muted); }
-[data-testid="stMetricValue"] { font-weight: 600; color: var(--ink); }
+[data-testid="stMetricValue"] { font-family: var(--titulo); font-weight: 600; color: var(--ink);
+  font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 [data-testid="stForm"], [data-testid="stFileUploader"] section {
-  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
 }
-[data-testid="stDataFrame"] { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--card); }
+[data-testid="stFileUploader"] section { border-style: dashed; border-color: var(--caramelo); }
+[data-testid="stDataFrame"] { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--card); }
 
 /* Abas */
-.stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--line); }
-.stTabs [data-baseweb="tab"] { padding: 10px 16px; font-weight: 500; color: var(--muted); }
-.stTabs [aria-selected="true"] { color: var(--teal-dark); font-weight: 600; }
+.stTabs [data-baseweb="tab-list"] { gap: 2px; border-bottom: 1px solid var(--line); }
+.stTabs [data-baseweb="tab"] { padding: 10px 14px; font-weight: 500; color: var(--muted); }
+.stTabs [aria-selected="true"] { color: var(--musgo); font-weight: 700; }
+.stTabs [data-baseweb="tab-highlight"] { background-color: var(--caramelo); }
 
 /* Botões */
 .stButton button, .stDownloadButton button, [data-testid="stFormSubmitButton"] button {
-  border-radius: 8px; font-weight: 500; padding: .55rem 1rem;
+  border-radius: 10px; font-weight: 600; padding: .55rem 1rem;
 }
 .stButton button[kind="primary"], [data-testid="stFormSubmitButton"] button {
-  background: var(--teal); border: 1px solid var(--teal); color: #fff;
+  background: var(--musgo); border: 1px solid var(--musgo); color: #fff;
 }
 .stButton button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] button:hover {
-  background: var(--teal-dark); border-color: var(--teal-dark); color: #fff;
+  background: var(--musgo-2); border-color: var(--musgo-2); color: #fff;
 }
 
-/* Login */
-.login-marca { text-align:center; margin: 6vh 0 18px; }
-.login-marca .logo { width:56px; height:56px; display:inline-block; margin-bottom:12px; }
-.login-marca h1 { font-size:24px; font-weight:600; margin:0; color:var(--ink); }
-.login-marca p { color:var(--muted); font-size:14px; margin:6px 0 0; }
+/* Entrada */
+.login-marca { text-align: center; margin: 4vh 0 10px; }
+.login-marca .zu-mascote { display: block; margin: 0 auto 6px; }
+.login-marca .vg-marca-nome { font-size: 40px; color: var(--ink); }
+.login-marca p { color: var(--muted); font-size: 15px; margin: 8px 0 0; }
+
+/* Carregamento e estados vazios com o Zu */
+.zu-carregando { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 22px 20px; margin: 8px 0 16px; }
+.zu-carregando-titulo { font-family: var(--titulo); font-weight: 600; font-size: 19px; color: var(--ink); margin-top: 4px; }
+.zu-carregando-sub { color: var(--muted); font-size: 14px; margin-top: 2px; }
+.zu-vazio { display: flex; align-items: center; gap: 20px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 16px; padding: 18px 22px; margin: 6px 0 14px; }
+.zu-vazio h4 { font-family: var(--titulo); font-weight: 600; font-size: 18px; margin: 0 0 4px; color: var(--ink); }
+.zu-vazio p { margin: 0; color: var(--muted); font-size: 14.5px; max-width: 60ch; }
+@media (max-width: 640px) { .zu-vazio { flex-direction: column; align-items: flex-start; } }
+
+/* Manual */
+.manual-item { display: grid; grid-template-columns: 200px 1fr; gap: 24px; align-items: center;
+  background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 24px; margin-bottom: 14px; }
+.manual-item h3 { font-family: var(--titulo); font-weight: 700; font-size: 21px; letter-spacing: -.01em; margin: 0 0 6px; color: var(--ink); }
+.manual-item .onde { color: var(--faixa); font-weight: 600; font-size: 13.5px; margin-bottom: 8px; }
+.manual-item p, .manual-item li { font-size: 15px; line-height: 1.55; color: var(--ink); max-width: 70ch; }
+.manual-item ol, .manual-item ul { margin: 6px 0 0 1.1rem; padding: 0; }
+.manual-item .dica { background: #F7EFE4; border-radius: 10px; padding: 8px 12px; margin-top: 10px; font-size: 14px; }
+@media (max-width: 760px) { .manual-item { grid-template-columns: 1fr; } }
 </style>
-"""
+""" % dict(_K)
 st.markdown(CSS, unsafe_allow_html=True)
 
 
@@ -814,6 +843,23 @@ def cabecalho(titulo, subtitulo=""):
         f"<h1 class='pagina-titulo'>{titulo}</h1><p class='pagina-sub'>{subtitulo}</p>",
         unsafe_allow_html=True,
     )
+
+
+@contextmanager
+def carregando(texto, detalhe=None):
+    """Mostra o Zu se enrolando e rolando enquanto uma tarefa demorada roda."""
+    lugar = st.empty()
+    lugar.markdown(marca.carregando_html(texto, detalhe), unsafe_allow_html=True)
+    try:
+        yield
+    finally:
+        lugar.empty()
+
+
+def vazio(titulo, texto, expressao="normal", item=None):
+    """Tela vazia com o Zu explicando o que fazer."""
+    st.markdown(f"<div class='zu-vazio'>{marca.mascote_svg(150, expressao, item)}"
+                f"<div><h4>{titulo}</h4><p>{texto}</p></div></div>", unsafe_allow_html=True)
 
 
 def secao(titulo):
@@ -1080,7 +1126,8 @@ def secao_faturamento():
                                   help="Use o mesmo nome da operadora para o sistema ligar os valores ao demonstrativo.")
         chave_sug = f"sug_{op}"
         if st.button("Analisar demonstrativos", key="sug_analisar", **FULL_BTN):
-            with st.spinner("Analisando os valores pagos..."):
+            with carregando("Analisando os valores pagos...",
+                            f"{marca.MASCOTE} está procurando o valor de cada procedimento e os reajustes."):
                 itens = motor_historico.carregar_itens(operadoras_sel=[op])
                 st.session_state[chave_sug] = motor_conhecimento.sugerir_valores(itens)
         sug = st.session_state.get(chave_sug)
@@ -1293,7 +1340,7 @@ def secao_valores(tipo):
 # ─────────────────────────────────────────────────────────────
 H = SimpleNamespace(
     cabecalho=cabecalho, secao=secao, tabela=tabela, brl=brl,
-    FULL_BTN=FULL_BTN, FULL_DL=FULL_DL, valores_df=valores_df,
+    FULL_BTN=FULL_BTN, FULL_DL=FULL_DL, valores_df=valores_df, carregando=carregando, vazio=vazio,
     listar_profissionais=listar_profissionais, PLANOS_SAUDE=PLANOS_SAUDE,
     registrar_log=registrar_log,
 )
@@ -1329,10 +1376,11 @@ if st.session_state.get("autenticado"):
 if not st.session_state.autenticado:
     _, centro, _ = st.columns([1, 1.1, 1])
     with centro:
+        clinica = obter_config("nome_clinica")
         st.markdown(
-            f"""<div class='login-marca'><div class='logo'>{LOGO_SVG}</div>
-            <h1>Espaço Saúde</h1>
-            <p>Auditoria, faturamento e repasses</p></div>""",
+            f"<div class='login-marca'>{marca.mascote_svg(190, 'feliz', rotulo=f'{marca.MASCOTE}, o tatu do {marca.NOME}')}"
+            f"{marca.marca_html(44, claro=False)}"
+            f"<p>{html.escape(clinica) if clinica else marca.SLOGAN}</p></div>",
             unsafe_allow_html=True,
         )
         mostrar_flash()
@@ -1370,9 +1418,9 @@ if st.session_state.get("trocar_senha"):
     _, centro, _ = st.columns([1, 1.1, 1])
     with centro:
         st.markdown(
-            f"""<div class='login-marca'><div class='logo'>{LOGO_SVG}</div>
-            <h1>Crie uma nova senha</h1>
-            <p>Por segurança, troque a senha antes de continuar.</p></div>""",
+            f"<div class='login-marca'>{marca.mascote_svg(170, 'atenta', 'prancheta')}"
+            "<h1 class='pagina-titulo'>Crie uma nova senha</h1>"
+            "<p>Por segurança, troque a senha antes de continuar.</p></div>",
             unsafe_allow_html=True,
         )
         with st.form("form_troca_obrigatoria"):
@@ -1403,6 +1451,7 @@ if st.session_state.get("trocar_senha"):
 SECOES_MENU = [
     ("Visão geral", [
         ("Painel", "Indicadores e gráficos de todo o histórico de glosas"),
+        ("Manual", "Como usar cada parte do sistema"),
     ]),
     ("Operação", [
         ("Casa das Máquinas", "Importar e auditar o demonstrativo do convênio"),
@@ -1428,14 +1477,15 @@ if st.session_state.get("menu") not in paginas:
 menu = st.session_state["menu"]
 
 with st.sidebar:
+    clinica = obter_config("nome_clinica")
     st.markdown(
-        f"<div class='marca'><div class='logo'>{LOGO_SVG}</div>"
-        "<div><div class='nome'>Espaço Saúde</div><div class='sub'>Auditoria & Repasses</div></div></div>",
+        f"<div class='marca-menu'>{marca.marca_html(38)}<div class='sub'>{marca.SLOGAN}</div></div>",
         unsafe_allow_html=True,
     )
     st.markdown(
         f"<div class='usuario'><b>{html.escape(str(st.session_state.usuario_atual).capitalize())}</b><br>"
-        f"<span>Perfil: {html.escape(str(st.session_state.nivel_permissao))}</span></div>",
+        f"<span>{html.escape(clinica) + ' · ' if clinica else ''}"
+        f"{html.escape(str(st.session_state.nivel_permissao))}</span></div>",
         unsafe_allow_html=True,
     )
     n = 0
@@ -1468,6 +1518,7 @@ if menu in MENUS_ADMIN and not eh_admin:
     st.stop()
 
 df_proc = st.session_state.get("ultimo_processamento", pd.DataFrame())
+paginas_relatorios.mr.CLINICA = obter_config("nome_clinica")
 mostrar_flash()
 
 PERIODOS = {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12, "Todo o histórico": None}
@@ -1498,8 +1549,9 @@ if menu == "Painel":
         secao("Base cadastral")
         kpis_cadastro()
         st.markdown("&nbsp;", unsafe_allow_html=True)
-        st.info("Ainda não há demonstrativos no histórico. Processe um arquivo em **Casa das Máquinas** "
-                "e os gráficos aparecem aqui.")
+        vazio("Nenhum demonstrativo por aqui ainda",
+              "Envie o primeiro demonstrativo na Casa das Máquinas. Os gráficos de glosa por mês, por operadora e "
+              "por motivo aparecem aqui assim que ele for conferido.", "atenta", "lupa")
     else:
         f1, f2 = st.columns([1, 2])
         periodo = f1.selectbox("Período (data do atendimento)", list(PERIODOS), index=2, key="painel_periodo")
@@ -1519,7 +1571,8 @@ if menu == "Painel":
                        "desmarcando \"Só itens com glosa\".")
 
         if r["itens_glosados"] == 0:
-            st.success("Nenhuma glosa no período e nas operadoras escolhidas.")
+            vazio("Nenhuma glosa no período", "Nas operadoras e no período escolhidos, tudo foi pago como esperado.",
+                  "feliz", "moeda")
         else:
             g1, g2 = st.columns(2)
             with g1:
@@ -1593,6 +1646,9 @@ if menu == "Painel":
                     avisar("success", "Demonstrativo removido do histórico.")
                     st.rerun()
 
+elif menu == "Manual":
+    manual.render()
+
 elif menu == "Casa das Máquinas":
     cabecalho("Casa das Máquinas",
               "Envie o demonstrativo do convênio: o sistema entende a estrutura do arquivo, aponta as glosas "
@@ -1608,7 +1664,9 @@ elif menu == "Casa das Máquinas":
     def _processar(nome_arq, dados, plano_sel, reprocessando=False):
         class _Arq(io.BytesIO):
             name = nome_arq
-        with st.spinner("Lendo a estrutura do arquivo e auditando os atendimentos..."):
+        with carregando("Conferindo o demonstrativo...",
+                        f"{marca.MASCOTE} está lendo a estrutura do arquivo e conferindo guia por guia. "
+                        "Arquivos grandes levam até um minuto."):
             try:
                 df_res, erro = motor_conhecimento.extrair(_Arq(dados), plano=plano_sel, somente_glosas=False)
             except Exception as e:
@@ -1740,7 +1798,8 @@ elif menu == "Lupa de Glosas":
     else:
         base = df_proc
     if base.empty:
-        st.info("Nenhum demonstrativo processado ainda. Envie um arquivo em **Casa das Máquinas**.")
+        vazio("Nada para pesquisar ainda", "Envie um demonstrativo na Casa das Máquinas e pesquise aqui por paciente, "
+              "guia, procedimento ou motivo da glosa.", "atenta", "lupa")
     else:
         b1, b2 = st.columns([3, 1])
         busca = b1.text_input("Buscar em todas as colunas", placeholder="Paciente, guia, procedimento, motivo...")
@@ -1797,7 +1856,8 @@ elif menu == "Cadastros":
     with aba_lista:
         df_prof = listar_profissionais()
         if df_prof.empty:
-            st.info("Nenhum profissional cadastrado ainda. Use a aba **Novo profissional**.")
+            vazio("Nenhum profissional cadastrado", "Use a aba Novo profissional para cadastrar a equipe da clínica.",
+                  "normal", "prancheta")
         else:
             f1, f2, f3 = st.columns([2, 1, 1])
             busca_p = f1.text_input("Buscar por nome ou registro", key="busca_prof")
@@ -1857,8 +1917,21 @@ elif menu == "Acessos":
     else:
         st.warning(f"Banco de dados: {banco.descricao()}. No Streamlit Cloud, usuários, valores e profissionais "
                    "são apagados quando o app reinicia. Configure DATABASE_URL nos Secrets para guardar de vez.")
-    aba_us, aba_ac, aba_log, aba_apr = st.tabs(["Usuários", "Acessos", "Histórico de alterações",
-                                                "Aprendizado da leitura"])
+    aba_cli, aba_us, aba_ac, aba_log, aba_apr = st.tabs(["Dados da clínica", "Usuários", "Acessos",
+                                                         "Histórico de alterações", "Aprendizado da leitura"])
+    with aba_cli:
+        st.caption(f"O nome da clínica aparece na tela de entrada, no menu e nos relatórios gerados pelo {marca.NOME}.")
+        with st.form("form_clinica"):
+            nome_cli = st.text_input("Nome da clínica", value=obter_config("nome_clinica"), max_chars=80,
+                                     placeholder="Ex.: Clínica Bem Viver")
+            doc_cli = st.text_input("CNPJ (opcional)", value=obter_config("cnpj_clinica"), max_chars=20)
+            salvar_cli = st.form_submit_button("Salvar dados da clínica", **FULL_FORM_BTN)
+        if salvar_cli:
+            salvar_config("nome_clinica", " ".join(nome_cli.split()))
+            salvar_config("cnpj_clinica", doc_cli.strip())
+            registrar_log("Dados da clínica alterados", " ".join(nome_cli.split()))
+            avisar("success", "Dados da clínica salvos.")
+            st.rerun()
     with aba_us:
         secao("Usuários cadastrados")
         df_us = motor_seguranca.listar_usuarios()
