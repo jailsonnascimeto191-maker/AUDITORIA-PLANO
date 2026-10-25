@@ -56,12 +56,18 @@ def marca_html(tamanho=34, claro=True):
             f"<span class='vg-marca-nome' style='color:{cor}'>{NOME.lower()}</span></span>")
 
 
+def nome_html(claro=False):
+    """Só o nome, sem o ícone (tela de entrada, abaixo do mascote)."""
+    cor = "#FFFFFF" if claro else C["tinta"]
+    return f"<span class='vg-marca-nome' style='color:{cor}'>{NOME.lower()}</span>"
+
+
 # --------------------------------------------------------------------------
 # Mascote: o tatu Zu (de perfil, olhando para a direita)
 # --------------------------------------------------------------------------
 def _olho(expressao):
     cx, cy = 181, 74
-    lente = (f"<circle cx='{cx}' cy='{cy}' r='18' fill='#FFFFFF' fill-opacity='.18' stroke='{C['tinta']}' stroke-width='4'/>"
+    lente = (f"<circle cx='{cx}' cy='{cy}' r='18' fill='none' stroke='{C['tinta']}' stroke-width='4'/>"
              f"<path d='M{cx - 12} {cy - 9} Q{cx - 6} {cy - 14} {cx + 1} {cy - 14}' stroke='#FFFFFF' stroke-width='3' "
              f"fill='none' stroke-linecap='round' stroke-opacity='.9'/>")
     haste = f"<path d='M{cx - 18} {cy - 2} L148 66' stroke='{C['tinta']}' stroke-width='4' stroke-linecap='round'/>"
@@ -70,9 +76,10 @@ def _olho(expressao):
                 f"stroke-width='4.5' stroke-linecap='round'/>")
     else:
         dx = {"atenta": 3, "desconfiada": -2}.get(expressao, 0)
-        olho = (f"<circle cx='{cx + dx}' cy='{cy + 1}' r='10' fill='{C['tinta']}'/>"
-                f"<circle cx='{cx + dx - 3.5}' cy='{cy - 3}' r='3.4' fill='#FFFFFF'/>"
-                f"<circle cx='{cx + dx + 3}' cy='{cy + 4}' r='1.6' fill='#FFFFFF'/>")
+        olho = (f"<circle cx='{cx}' cy='{cy}' r='15' fill='#FFFFFF'/>"
+                f"<circle cx='{cx + dx}' cy='{cy + 1}' r='8.5' fill='{C['tinta']}'/>"
+                f"<circle cx='{cx + dx - 3}' cy='{cy - 2.5}' r='3' fill='#FFFFFF'/>"
+                f"<circle cx='{cx + dx + 2.5}' cy='{cy + 3.5}' r='1.4' fill='#FFFFFF'/>")
         if expressao == "desconfiada":
             olho += (f"<path d='M{cx - 12} {cy - 4} Q{cx} {cy - 10} {cx + 12} {cy - 4} L{cx + 12} {cy - 13} "
                      f"L{cx - 12} {cy - 13} Z' fill='{C['pele']}'/>")
@@ -108,22 +115,26 @@ def _item(item):
 def _tatu(expressao="normal", item=None):
     """Tatu de perfil (área 0 0 240 160)."""
     faixas = "".join(
-        f"<path d='M{x} {y1} Q{x - 10} 84 {x} 132' fill='none' stroke='{C['faixa']}' stroke-width='5' stroke-linecap='round'/>"
-        for x, y1 in ((66, 52), (88, 40), (110, 36), (132, 40)))
-    escamas = "".join(f"<circle cx='{cx}' cy='{cy}' r='3' fill='{C['faixa']}' fill-opacity='.55'/>"
-                      for cx, cy in ((54, 96), (76, 70), (98, 60), (120, 60), (142, 70), (77, 108), (99, 100), (121, 100)))
+        f"<path d='M{x} {y1} Q{x - 10} 82 {x} 121' fill='none' stroke='{C['faixa']}' stroke-width='5' stroke-linecap='round'/>"
+        for x, y1 in ((76, 46), (104, 36), (132, 40)))
+    escamas = "".join(f"<circle cx='{cx}' cy='{cy}' r='3.2' fill='{C['faixa']}' fill-opacity='.45'/>"
+                      for cx, cy in ((52, 98), (90, 64)))
     return (
         # rabo
         f"<path d='M34 112 Q14 118 8 104' fill='none' stroke='{C['caramelo']}' stroke-width='10' stroke-linecap='round'/>"
         f"<path d='M20 112 Q14 112 12 107' fill='none' stroke='{C['faixa']}' stroke-width='3' stroke-linecap='round'/>"
-        # patas
-        + "".join(f"<rect x='{x}' y='122' width='18' height='24' rx='8' fill='{C['pele']}'/>"
-                  f"<path d='M{x + 3} 146 l3 -4 l3 4 l3 -4 l3 4' fill='none' stroke='{C['faixa']}' stroke-width='2'/>"
-                  for x in (46, 76, 120, 146))
+        # sombra no chão
+        + f"<ellipse cx='108' cy='153' rx='80' ry='4.5' fill='{C['tinta']}' fill-opacity='.08'/>"
+        # patas: as de trás um tom mais escuras, todas com pé arredondado apontando para frente
+        + "".join(f"<path d='M{x} 116 L{x} 140 Q{x} 151 {x + 11} 151 L{x + 20} 151 Q{x + 27} 151 {x + 27} 145 "
+                  f"Q{x + 27} 139 {x + 19} 138 L{x + 18} 116 Z' fill='{cor}'/>"
+                  f"<path d='M{x + 4} 149 Q{x + 12} 152 {x + 22} 149' fill='none' stroke='#FFFFFF' "
+                  f"stroke-opacity='.45' stroke-width='2' stroke-linecap='round'/>"
+                  for x, cor in ((60, '#E3C7A3'), (134, '#E3C7A3'), (44, C['pele']), (114, C['pele'])))
         # carapaça
-        + f"<path d='M32 128 Q30 40 104 34 Q170 36 168 128 Z' fill='{C['caramelo']}'/>"
+        + f"<path d='M32 124 Q30 40 104 34 Q170 36 168 124 Z' fill='{C['caramelo']}'/>"
         + faixas + escamas
-        + f"<path d='M32 128 L168 128' stroke='{C['faixa']}' stroke-width='5' stroke-linecap='round'/>"
+        + f"<path d='M32 124 L168 124' stroke='{C['faixa']}' stroke-width='5' stroke-linecap='round'/>"
         # cabeça
         + f"<g class='zu-cabeca'>"
           f"<path d='M148 60 Q162 44 186 50 Q210 58 216 84 Q220 102 206 106 Q184 112 158 104 Q142 84 148 60 Z' fill='{C['pele']}'/>"

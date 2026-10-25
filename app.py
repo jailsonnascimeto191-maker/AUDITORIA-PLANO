@@ -806,10 +806,15 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 
 /* Entrada */
-.login-marca { text-align: center; margin: 4vh 0 10px; }
-.login-marca .zu-mascote { display: block; margin: 0 auto 6px; }
-.login-marca .vg-marca-nome { font-size: 40px; color: var(--ink); }
-.login-marca p { color: var(--muted); font-size: 15px; margin: 8px 0 0; }
+.login-marca { text-align: center; margin: 5vh 0 22px; }
+.login-marca .zu-mascote { display: block; margin: 0 auto 4px; }
+.login-nome .vg-marca-nome { font-size: 56px; line-height: 1; letter-spacing: -.03em; color: var(--musgo); }
+.login-marca p { color: var(--muted); font-size: 16px; margin: 14px 0 0; }
+.login-marca p.login-clinica { font-size: 13.5px; margin-top: 4px; color: var(--faixa); font-weight: 600; }
+[data-testid="stForm"] { padding: 22px 22px 18px; border-radius: 18px; }
+[data-testid="stForm"] [data-baseweb="input"], [data-testid="stForm"] [data-baseweb="base-input"] {
+  background: #E6ECE9; border-color: transparent; border-radius: 10px; }
+[data-testid="stForm"] [data-baseweb="input"] input { background: transparent; }
 
 /* Carregamento e estados vazios com o Zu */
 .zu-carregando { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 22px 20px; margin: 8px 0 16px; }
@@ -1378,9 +1383,10 @@ if not st.session_state.autenticado:
     with centro:
         clinica = obter_config("nome_clinica")
         st.markdown(
-            f"<div class='login-marca'>{marca.mascote_svg(190, 'feliz', rotulo=f'{marca.MASCOTE}, o tatu do {marca.NOME}')}"
-            f"{marca.marca_html(44, claro=False)}"
-            f"<p>{html.escape(clinica) if clinica else marca.SLOGAN}</p></div>",
+            f"<div class='login-marca'>{marca.mascote_svg(230, 'atenta', rotulo=f'{marca.MASCOTE}, o tatu do {marca.NOME}')}"
+            f"<div class='login-nome'>{marca.nome_html()}</div>"
+            f"<p>{marca.SLOGAN}</p>"
+            + (f"<p class='login-clinica'>{html.escape(clinica)}</p>" if clinica else "") + "</div>",
             unsafe_allow_html=True,
         )
         mostrar_flash()
