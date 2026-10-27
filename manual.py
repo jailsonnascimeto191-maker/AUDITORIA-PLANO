@@ -69,6 +69,21 @@ SECOES = [
         dica="Possível pagamento em duplicidade lista as guias pagas por inteiro mais de uma vez. Confira com o extrato.",
     ),
     dict(
+        titulo="Recursos e lotes de reapresentação", onde="Acessos → Aprendizado da leitura → Padrões de lote",
+        pose=("desconfiada", "lupa"),
+        texto="Quando uma glosa é recorrida, o plano costuma pagar depois em outro lote, às vezes com outro número de "
+              "guia. O sistema observa os números de protocolo de cada operadora, separa em famílias e descobre "
+              "sozinho quais famílias trazem atendimentos que já tinham aparecido antes.",
+        passos=["Envie os demonstrativos normalmente. O padrão é aprendido com o próprio arquivo e com o histórico.",
+                "Nas famílias de reapresentação, cada linha é ligada ao atendimento original e não conta como "
+                "atendimento novo.",
+                "O original mostra o que foi recuperado: glosa revertida, recurso pago em parte ou não pago.",
+                "Se a evidência não bastar, a família fica sem definição. Você pode escolher o tipo e aplicar ao "
+                "histórico."],
+        dica="O sistema não inventa nada: só liga quando paciente, procedimento e data são os mesmos e há um único "
+             "atendimento original. Os demais casos ficam com aviso para conferir.",
+    ),
+    dict(
         titulo="Relatórios", onde="Produção do Profissional, Relatório de Glosas, Faturamento x Recebimento",
         pose=("normal", "prancheta"),
         texto="Os três relatórios saem em Excel e PDF, com o nome da clínica.",
@@ -97,6 +112,8 @@ STATUS = [
     ("Complemento de pagamento", "A segunda parte de um pagamento. Não conta como atendimento novo."),
     ("Possível pagamento em duplicidade", "A mesma guia foi paga por inteiro mais de uma vez."),
     ("Glosa mantida em novo crédito", "A guia voltou em outro crédito e continuou glosada."),
+    ("Glosa revertida em recurso", "Glosado com justificativa e pago depois num lote de reapresentação."),
+    ("Recurso pago em parte", "Parte do valor glosado foi recuperada num lote de reapresentação; o resto continua glosado."),
     ("Glosa (valor não identificado)", "Houve glosa, mas falta o valor do procedimento no cadastro."),
 ]
 

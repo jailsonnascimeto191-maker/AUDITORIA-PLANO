@@ -327,7 +327,10 @@ def vincular_historico(operadora, demonstrativo_id=None):
 
 def _vincular(conn, operadora, demonstrativo_id=None):
     df = _itens_operadora(conn, operadora)
-    if df.empty or df["_demo"].nunique() < 2:
+    if df.empty:
+        return 0, 0
+    if df["_demo"].nunique() < 2:  # um arquivo só: nada para ligar entre arquivos, mas o padrão é aprendido
+        _ligar_reapresentacoes(conn, df, operadora, None, lambda k: "", set(), so_aprender=True)
         return 0, 0
     exigir = {int(demonstrativo_id)} if demonstrativo_id is not None else None
     if True:
@@ -343,7 +346,9 @@ def _vincular(conn, operadora, demonstrativo_id=None):
                 _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = ?",
                                (int(parceiro), json.dumps(original, ensure_ascii=False)))
                 afetados.add(df.at[item, "_demo"])
-        # 2) complemento pago em outra guia (pagamento em duas partes)
+        # 2) lotes de reapresentação (recurso/complemento) com outro número de guia: padrão aprendido
+        n_reap, conferir_reap = _ligar_reapresentacoes(conn, df, operadora, exigir, origem, afetados)
+        # 3) complemento pago em outra guia (pagamento em duas partes)
         pares, ambiguos = me.encontrar_pares(df, grupo=df["_demo"], exigir_em=exigir)
         ambiguos = set(ambiguos) | set(conferir)
         for a, b in pares:
@@ -359,7 +364,43 @@ def _vincular(conn, operadora, demonstrativo_id=None):
                 novo = "; ".join([x for x in [str(df.at[k, "Alertas"] or "")] if x] + [me.ALERTA_POSSIVEL_PARTES])
                 conn.execute("UPDATE demonstrativo_itens SET alertas = ? WHERE id = ?", (novo, int(k)))
         _atualizar_totais(conn, afetados)
-    return len(pares) + len(mesma), len(ambiguos)
+    return len(pares) + len(mesma) + n_reap, len(ambiguos) + conferir_reap
+
+
+def _ligar_reapresentacoes(conn, df, operadora, exigir, origem, afetados, so_aprender=False):
+    """Aprende as famílias de protocolo com TODO o histórico da operadora (mais evidência que um arquivo só),
+    guarda o que aprendeu e liga as reapresentações aos atendimentos originais de outros arquivos."""
+    import motor_conhecimento as mk
+    import motor_padroes as mp
+    try:
+        definidos = mk.padroes_definidos(conn).get(me._norm(operadora), {})
+        familias, analise, tipos = mp.preparar(df, definidos)
+    except Exception:  # padrões são um extra: nunca impedem o restante
+        return 0, 0
+    if familias:
+        try:
+            mk.salvar_padroes(operadora, analise, conn)
+        except banco.Error:
+            pass
+    if not familias or so_aprender:
+        return 0, 0
+    ligacoes, sem, varios = mp.encontrar_reapresentacoes(df, familias, tipos, grupo=df["_demo"], exigir_em=exigir)
+    fam = mp.familias_da_linha(df, familias)
+    for a, k in ligacoes:
+        orig = mp.aplicar_reapresentacao(df, a, k, origem, familia_k=", ".join(fam[k]))
+        for item, parceiro in ((a, k), (k, a)):
+            original = {c: _py(v) for c, v in orig[item].items()}
+            _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = ?",
+                           (int(parceiro), json.dumps(original, ensure_ascii=False)))
+            afetados.add(df.at[item, "_demo"])
+    # avisos só nas linhas do arquivo novo (as antigas já receberam o aviso quando foram lidas)
+    novos = {k for k in (sem | varios) if exigir is None or df.at[k, "_demo"] in exigir}
+    antes = {k: str(df.at[k, "Alertas"] or "") for k in novos}
+    mp.marcar_avisos(df, sem & novos, varios & novos)
+    for k in novos:
+        if str(df.at[k, "Alertas"] or "") != antes[k]:
+            conn.execute("UPDATE demonstrativo_itens SET alertas = ? WHERE id = ?", (df.at[k, "Alertas"], int(k)))
+    return len(ligacoes), len(varios & novos)
 
 
 def _desvincular(conn, demonstrativo_id):
@@ -422,7 +463,8 @@ def pagamentos_em_partes(operadoras_sel=None):
         return vazio, vazio, vazio
     itens["Complemento recebido"] = pd.to_numeric(itens.get("Complemento recebido"), errors="coerce").fillna(0.0)
     cols = [c for c in cols if c in itens.columns]
-    vinculados = itens[itens["Status da glosa"] == me.STATUS_PAGO_EM_PARTES][cols]
+    vinculados = itens[itens["Status da glosa"].isin([me.STATUS_PAGO_EM_PARTES, "Glosa revertida em recurso",
+                                                      "Recurso pago em parte"])][cols]
     pend = itens[itens["Status da glosa"] == "Pago a menor sem justificativa"].copy()
     pend["Falta receber"] = (pend["Diferença sem justificativa"]).round(2)
     pendentes = pend[[c for c in cols if c not in ("Complemento recebido", "Vínculo")] + ["Falta receber"]]

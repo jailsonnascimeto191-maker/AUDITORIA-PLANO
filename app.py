@@ -25,6 +25,7 @@ import motor_seguranca  # noqa: E402
 import motor_extracao  # noqa: E402
 import motor_conhecimento  # noqa: E402
 import motor_historico  # noqa: E402
+import motor_padroes  # noqa: E402
 import manual  # noqa: E402
 import paginas_relatorios  # noqa: E402
 
@@ -1736,6 +1737,16 @@ elif menu == "Casa das Máquinas":
             m[2].metric("Linhas agrupadas", f"{res.get('linhas_agrupadas', 0):,}".replace(",", "."),
                         help="Várias sessões da mesma guia ou o mesmo atendimento pago em mais de um crédito.")
             m[3].metric("Atendimentos", f"{res.get('atendimentos', 0):,}".replace(",", "."))
+            pad = res.get("padroes") or {}
+            if pad.get("analise"):
+                st.markdown("**Padrões de lote encontrados neste arquivo**")
+                st.caption(
+                    f"{pad.get('ligadas', 0)} linha(s) de lotes de reapresentação foram ligadas ao atendimento original"
+                    + (f"; {pad['sem_original']} sem o original neste arquivo" if pad.get("sem_original") else "")
+                    + (f"; {pad['varios']} com mais de um original possível (conferir)" if pad.get("varios") else "")
+                    + ". O tipo de cada família pode ser ajustado em Acessos → Aprendizado da leitura.")
+                st.dataframe(pd.DataFrame(pad["analise"])[["Família", "Linhas", "% já vistos", "Prazo típico (dias)",
+                                                           "Período", "Tipo usado"]], hide_index=True, **FULL_DF)
             fontes = df_proc["Fonte do valor informado"].value_counts() if "Fonte do valor informado" in df_proc else pd.Series(dtype=int)
             if len(fontes):
                 st.caption("Origem do valor apresentado: " + " · ".join(f"{k}: {v}" for k, v in fontes.items()))
@@ -2036,4 +2047,51 @@ elif menu == "Acessos":
                 motor_conhecimento.excluir_perfil(alvo_p)
                 registrar_log("Padrão de leitura apagado", rot[alvo_p])
                 avisar("success", "Padrão apagado. Os próximos arquivos com esse layout serão lidos automaticamente.")
+                st.rerun()
+
+        secao("Padrões de lote (números de protocolo)")
+        st.caption(
+            "O sistema separa os protocolos de cada operadora em famílias pelo começo do número e observa o que "
+            "acontece em cada uma. Quando quase todos os atendimentos de uma família já tinham aparecido antes em "
+            "outro lote, ela é tratada como reapresentação (recurso de glosa ou complemento) e cada linha é ligada "
+            "ao atendimento original. Nada aqui é regra fixa: se a evidência não bastar, a família fica sem "
+            "definição e você pode escolher o tipo.")
+        padroes = motor_conhecimento.listar_padroes()
+        if padroes.empty:
+            st.info("Nenhum padrão de lote aprendido ainda. Ele aparece depois que um demonstrativo com números de "
+                    "protocolo é processado na Casa das Máquinas.")
+        else:
+            AUTO = "Automático (pela evidência)"
+            padroes["% já vistos"] = (100 * padroes["Já vistos antes"] / padroes["Linhas"].clip(lower=1)).round(1)
+            padroes["Tipo usado"] = padroes["Definido pelo usuário"].fillna("").replace("", AUTO)
+            mostrar = padroes[["Operadora", "Família", "Linhas", "% já vistos", "Prazo típico (dias)", "Período",
+                               "Procedimentos principais", "Tipo pela evidência", "Tipo usado"]]
+            ed_p = st.data_editor(
+                mostrar, key="padroes_lote", hide_index=True,
+                disabled=[c for c in mostrar.columns if c != "Tipo usado"],
+                column_config={
+                    "Família": st.column_config.TextColumn("Família", help="Começo do número do protocolo."),
+                    "% já vistos": st.column_config.NumberColumn(
+                        "% já vistos", format="%.1f%%",
+                        help="Atendimentos (mesmo paciente, procedimento e data) que já tinham aparecido antes em "
+                             "outra família de lote."),
+                    "Prazo típico (dias)": st.column_config.NumberColumn(
+                        "Prazo típico (dias)", help="Mediana de dias entre o atendimento e o pagamento."),
+                    "Tipo usado": st.column_config.SelectboxColumn(
+                        "Tipo usado", options=[AUTO, motor_padroes.TIPO_NORMAL, motor_padroes.TIPO_REAPRESENTACAO],
+                        help="Deixe automático para o sistema decidir pelos dados."),
+                }, **FULL_ED)
+            if st.button("Salvar tipos e aplicar ao histórico", key="padroes_salvar"):
+                mudou = 0
+                for (_, novo), (_, velho) in zip(ed_p.iterrows(), mostrar.iterrows()):
+                    if novo["Tipo usado"] != velho["Tipo usado"]:
+                        tipo = None if novo["Tipo usado"] == AUTO else novo["Tipo usado"]
+                        motor_conhecimento.definir_tipo_padrao(velho["Operadora"], velho["Família"], tipo)
+                        registrar_log("Tipo de lote definido",
+                                      f"{velho['Operadora']} | família {velho['Família']} | {novo['Tipo usado']}")
+                        mudou += 1
+                with carregando("Ligando reapresentações no histórico..."):
+                    ligados = sum(motor_historico.vincular_historico(op)[0] for op in padroes["Operadora"].unique())
+                avisar("success", f"{mudou} tipo(s) alterado(s). {ligados} atendimento(s) ligados no histórico. "
+                                  "Os próximos demonstrativos já usam esta definição.")
                 st.rerun()

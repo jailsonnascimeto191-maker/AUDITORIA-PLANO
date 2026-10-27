@@ -1101,13 +1101,15 @@ def _consolidar(d):
     return junto.sort_values("_ordem", kind="stable").drop(columns=["_ordem"]).reset_index(drop=True)
 
 
-def _analisar(d, operadora, conhecimento):
-    """Preenche valor informado (quando o arquivo não traz), valor e situação da glosa, motivo e alertas."""
+def _analisar(d, operadora, conhecimento, sem_aprender=None):
+    """Preenche valor informado (quando o arquivo não traz), valor e situação da glosa, motivo e alertas.
+    sem_aprender: linhas que não servem para aprender o valor típico (ex.: reapresentações)."""
     conhecimento = conhecimento or {}
     tabela = conhecimento.get("tabela_valores")
     refs_hist = conhecimento.get("referencias") or {}
     cod_glosa = dict(conhecimento.get("codigos_glosa") or {})
-    refs_arquivo = aprender_referencias(d, operadora)
+    base_ref = d if sem_aprender is None or not sem_aprender.any() else d[~sem_aprender.reindex(d.index, fill_value=False)]
+    refs_arquivo = aprender_referencias(base_ref, operadora)
     cod_glosa.update({k: v for k, v in aprender_codigos_glosa(d).items() if k not in cod_glosa})
     op = _norm(operadora or "")
     cache_cad = {}
@@ -1541,7 +1543,16 @@ def finalizar(linhas, operadora, conhecimento=None):
     d, resumo["copias_removidas"] = _remover_copias(d)
     g = _consolidar(d)
     resumo["linhas_agrupadas"] = int(len(d) - len(g))
-    out, refs, codigos = _analisar(g, operadora, conhecimento)
+    import motor_padroes  # import aqui: motor_padroes usa este módulo
+    definidos = ((conhecimento or {}).get("padroes") or {}).get(_norm(operadora or ""), {})
+    try:
+        familias, analise, tipos = motor_padroes.preparar(g, definidos)
+        reap = motor_padroes.linhas_reapresentacao(g, familias, tipos) if familias else None
+    except Exception:  # padrões são um extra: nunca impedem a leitura
+        familias, analise, tipos, reap = [], None, {}, None
+    out, refs, codigos = _analisar(g, operadora, conhecimento, sem_aprender=reap)
+    if familias:
+        out, resumo["padroes"] = motor_padroes.ligar_no_arquivo(out, familias, tipos, analise)
     out, resumo["complementos"] = _juntar_complementos(out)
     resumo.update(atendimentos=len(out), referencias=refs, codigos_glosa=codigos)
     for c in COLUNAS_COMPLETAS:

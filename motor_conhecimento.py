@@ -53,12 +53,27 @@ def init_conhecimento():
                 descricao TEXT,
                 atualizado_em TEXT)"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS padroes_protocolo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operadora TEXT NOT NULL,
+                familia TEXT NOT NULL,
+                tipo_evidencia TEXT,
+                tipo_usuario TEXT,
+                linhas INTEGER,
+                ja_vistos INTEGER,
+                prazo_dias INTEGER,
+                procedimentos TEXT,
+                periodo TEXT,
+                atualizado_em TEXT,
+                UNIQUE (operadora, familia))"""
+        )
         conn.commit()
 
 
 def carregar():
     """Tudo o que já foi aprendido + a tabela de valores cadastrada, no formato do motor_extracao."""
-    con = dict(perfis={}, referencias={}, codigos_glosa={}, tabela_valores=None)
+    con = dict(perfis={}, referencias={}, codigos_glosa={}, tabela_valores=None, padroes={})
     try:
         with _conectar() as conn:
             for assin, mapa in conn.execute("SELECT assinatura, mapeamento FROM perfis_leitura").fetchall():
@@ -71,6 +86,7 @@ def carregar():
                 con["referencias"][(op, cod, mes)] = float(v)
             for cod, desc in conn.execute("SELECT codigo, descricao FROM codigos_glosa").fetchall():
                 con["codigos_glosa"][cod] = desc
+            con["padroes"] = padroes_definidos(conn)
             cols = banco.colunas(conn, "tabela_valores_faturamento")
             if cols:
                 extra = "".join(f", {c}" for c in ("codigo_tuss", "vigencia_inicio", "vigencia_fim", "valor_flex",
@@ -189,7 +205,9 @@ def sugerir_valores(itens, minimo_mes=5):
     texto = lambda c: d.get(c, pd.Series("", index=d.index)).fillna("").astype(str).str.strip()
     cheio = (texto("Motivo da glosa").eq("") & texto("Código da glosa").eq("") & (glosa.fillna(0) <= 0.005)
              & (ql.isna() | qs.isna() | (ql >= qs)) & (pago > 0) & texto("Código").ne("") & texto("Código").ne("-")
-             & ~texto("Status da glosa").isin([me.STATUS_PAGO_EM_PARTES, me.STATUS_COMPLEMENTO]))
+             & ~texto("Status da glosa").isin([me.STATUS_PAGO_EM_PARTES, me.STATUS_COMPLEMENTO,
+                                                   me.STATUS_GLOSA_MANTIDA, "Glosa revertida em recurso",
+                                                   "Recurso pago em parte"]))
     d = d[cheio].copy()
     if d.empty:
         return pd.DataFrame(columns=cols)
@@ -271,3 +289,68 @@ def sugerir_valores(itens, minimo_mes=5):
             out.at[i, "% Flex"] = pct
             out.at[i, "Observação"] = f"Flex calculado ({pct:.0f}% do Nacional): sem atendimento Flex no período"
     return out.sort_values(["Código", "Início"], na_position="first", kind="stable").reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------
+# Padrões de protocolo (famílias de lote) aprendidos por operadora
+# --------------------------------------------------------------------------
+def padroes_definidos(conn=None):
+    """{operadora_norm: {família: {"tipo": tipo usado, "usuario": definido pelo usuário?}}}"""
+    def ler(c):
+        res = {}
+        for op, fam, ev, us in c.execute(
+                "SELECT operadora, familia, tipo_evidencia, tipo_usuario FROM padroes_protocolo").fetchall():
+            res.setdefault(me._norm(op), {})[fam] = {"tipo": us or ev, "usuario": bool(us)}
+        return res
+    try:
+        if conn is not None:
+            return ler(conn)
+        with _conectar() as c:
+            return ler(c)
+    except banco.Error:
+        return {}
+
+
+def salvar_padroes(operadora, analise, conn=None):
+    """Guarda a evidência mais recente de cada família (calculada sobre todo o histórico da operadora).
+    O tipo definido pelo usuário nunca é apagado."""
+    if analise is None or len(analise) == 0 or not operadora:
+        return 0
+    agora = banco.agora_txt()
+    linhas = [(operadora, r["Família"], r["Tipo pela evidência"], int(r["Linhas"]), int(r["Já vistos antes"]),
+               None if pd.isna(r["Prazo típico (dias)"]) else int(r["Prazo típico (dias)"]),
+               r["Procedimentos principais"], r["Período"], agora)
+              for _, r in pd.DataFrame(analise).iterrows()]
+    sql = ("INSERT INTO padroes_protocolo (operadora, familia, tipo_evidencia, linhas, ja_vistos, prazo_dias, "
+            "procedimentos, periodo, atualizado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (operadora, familia) DO UPDATE SET tipo_evidencia = excluded.tipo_evidencia, "
+            "linhas = excluded.linhas, ja_vistos = excluded.ja_vistos, prazo_dias = excluded.prazo_dias, "
+            "procedimentos = excluded.procedimentos, periodo = excluded.periodo, atualizado_em = excluded.atualizado_em")
+    if conn is not None:  # dentro de uma gravação já aberta (ex.: ligação do histórico)
+        conn.executemany(sql, linhas)
+        return len(linhas)
+    with _conectar() as c:
+        c.executemany(sql, linhas)
+        c.commit()
+    return len(linhas)
+
+
+def definir_tipo_padrao(operadora, familia, tipo):
+    """tipo: um dos tipos de motor_padroes, ou None para voltar ao automático (pela evidência)."""
+    with _conectar() as conn:
+        conn.execute("UPDATE padroes_protocolo SET tipo_usuario = ? WHERE operadora = ? AND familia = ?",
+                     (tipo or None, operadora, familia))
+        conn.commit()
+
+
+def listar_padroes():
+    try:
+        with _conectar() as conn:
+            return banco.ler_df(
+                conn, 'SELECT operadora AS "Operadora", familia AS "Família", linhas AS "Linhas", '
+                      'ja_vistos AS "Já vistos antes", prazo_dias AS "Prazo típico (dias)", '
+                      'procedimentos AS "Procedimentos principais", periodo AS "Período", '
+                      'tipo_evidencia AS "Tipo pela evidência", tipo_usuario AS "Definido pelo usuário", '
+                      'atualizado_em AS "Atualizado em" FROM padroes_protocolo ORDER BY operadora, familia')
+    except banco.Error:
+        return pd.DataFrame()
