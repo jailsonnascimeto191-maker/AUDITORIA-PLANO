@@ -84,6 +84,19 @@ SECOES = [
              "atendimento original. Os demais casos ficam com aviso para conferir.",
     ),
     dict(
+        titulo="Acompanhar recursos e casos para verificar", onde="Painel e Casa das Máquinas", pose=("atenta", "alerta"),
+        texto="Para cada guia glosada que volta em outro crédito, o sistema guarda a história: quando e em que "
+              "protocolo glosou, o motivo, em que protocolo voltou e quanto foi recebido. E quando encontra algo fora "
+              "do padrão, pede para vocês verificarem em vez de decidir sozinho.",
+        passos=["Em Recursos de glosa, filtre por situação: Recebido, Recebido em parte ou Não pago.",
+                "Em Para verificar, cada caso traz o que conferir e as guias envolvidas.",
+                "Exemplo: glosa por duplicidade que o plano pagou no recurso, mas com outra guia já paga do mesmo "
+                "paciente, procedimento e dia. Confira se foram duas sessões; se não, o plano pode pedir devolução.",
+                "O Relatório de Glosas em Excel traz as abas Recursos de glosa e Para verificar."],
+        dica="Glosa sem recurso identificado não entra em Recursos de glosa: o sistema só sabe que houve recurso "
+             "quando a guia volta num demonstrativo.",
+    ),
+    dict(
         titulo="Relatórios", onde="Produção do Profissional, Relatório de Glosas, Faturamento x Recebimento",
         pose=("normal", "prancheta"),
         texto="Os três relatórios saem em Excel e PDF, com o nome da clínica.",

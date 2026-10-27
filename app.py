@@ -26,6 +26,7 @@ import motor_extracao  # noqa: E402
 import motor_conhecimento  # noqa: E402
 import motor_historico  # noqa: E402
 import motor_padroes  # noqa: E402
+import motor_verificacao  # noqa: E402
 import manual  # noqa: E402
 import paginas_relatorios  # noqa: E402
 
@@ -907,6 +908,36 @@ def mostrar_flash():
         getattr(st, flash[0])(flash[1])
 
 
+def recursos_e_verificacao(df, chave):
+    """Glosas recursadas (o que voltou e quanto recebemos) e casos fora do padrão para a equipe verificar."""
+    anom = motor_verificacao.anomalias(df)
+    rec = motor_verificacao.recursos(df)
+    if len(anom):
+        tipos = anom["Tipo"].value_counts()
+        st.warning(f"**{len(anom)} caso(s) para verificar**: "
+                   + "; ".join(f"{t.lower()} ({n})" for t, n in tipos.items())
+                   + ". O sistema não corrige esses casos sozinho: confira cada um.")
+        with st.expander(f"Para verificar ({len(anom)})"):
+            tipo_sel = st.multiselect("Tipo", list(tipos.index), default=list(tipos.index), key=f"anom_tipo_{chave}")
+            vis = anom[anom["Tipo"].isin(tipo_sel)] if tipo_sel else anom
+            tabela(vis, column_config={"O que verificar": st.column_config.TextColumn(width="large")})
+            baixar(vis, "para_verificar", key=f"dl_anom_{chave}")
+    if len(rec):
+        with st.expander(f"Recursos de glosa ({len(rec)})"):
+            st.caption("Guias glosadas que voltaram em outro crédito ou protocolo (recurso) e o que foi recebido. "
+                       "Só entram as que o plano reapresentou no demonstrativo; glosa sem retorno não aparece aqui.")
+            m = st.columns(4)
+            m[0].metric("Valor glosado", brl(float(rec["Valor glosado"].sum())))
+            m[1].metric("Recebido no recurso", brl(float(rec["Valor recebido"].sum())))
+            m[2].metric("Ainda a receber", brl(float(rec["Falta receber"].sum())))
+            m[3].metric("Não pagos", f"{int((rec['Situação'] == motor_extracao.RECURSO_NAO_PAGO).sum())}")
+            sit = st.multiselect("Situação", sorted(rec["Situação"].unique()), default=sorted(rec["Situação"].unique()),
+                                 key=f"rec_sit_{chave}")
+            vis = rec[rec["Situação"].isin(sit)] if sit else rec
+            tabela(vis)
+            baixar(vis, "recursos_de_glosa", key=f"dl_rec_{chave}")
+
+
 def kpis_do_processamento(df):
     """Sempre exibe os 4 indicadores, mesmo sem dados (valores zerados)."""
     total = glosado = 0.0
@@ -1584,15 +1615,17 @@ if menu == "Painel":
             g1, g2 = st.columns(2)
             with g1:
                 secao("Valor glosado por mês")
-                st.bar_chart(r["por_mes"], x="Mês", y="Valor glosado", color="#0E7C86", height=280)
+                st.bar_chart(r["por_mes"], x="Mês", y="Valor glosado", color=marca.C["musgo"], height=280)
             with g2:
                 secao("Valor glosado por operadora")
-                st.bar_chart(r["por_operadora"], x="Operadora", y="Valor glosado", color="#0F2A43",
+                st.bar_chart(r["por_operadora"], x="Operadora", y="Valor glosado", color=marca.C["faixa"],
                              horizontal=True, height=280)
             secao("Principais motivos de glosa")
             mot = r["motivos"].copy()
             mot["% do glosado"] = mot["% do glosado"] * 100
             tabela(mot, column_config={"% do glosado": st.column_config.NumberColumn(format="%.1f%%")})
+
+        recursos_e_verificacao(itens, "painel")
 
         secao("Base cadastral")
         kpis_cadastro()
@@ -1726,6 +1759,8 @@ elif menu == "Casa das Máquinas":
         if n_dif:
             st.caption(f"Além das glosas, {n_dif} atendimento(s) foram pagos abaixo do valor de referência sem "
                        f"justificativa do plano (total {brl(dif_total)}). Veja em **Exibir → Diferenças a conferir**.")
+
+        recursos_e_verificacao(df_proc, "casa")
 
         leitura = st.session_state.get("ultima_leitura") or {}
         res = leitura.get("resumo") or {}

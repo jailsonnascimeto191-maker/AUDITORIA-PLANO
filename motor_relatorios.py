@@ -581,12 +581,29 @@ def spec_glosas(df_glosas, df_completo=None, arquivos=None):
                    inteiros=["Quantidade", "Quantidade liberada"],
                    datas=["Data do atendimento", "Data de pagamento"], total=["Valor informado", "Valor pago", "Valor da glosa"],
                    status="Status da glosa", pdf_colunas=pdf_cols)
+    # guias glosadas que voltaram em recurso, e anomalias para a equipe verificar (só no Excel)
+    import motor_verificacao as mv
+    base_rec = df_completo if df_completo is not None else df_glosas
+    rec = mv.recursos(base_rec)
+    anom = mv.anomalias(base_rec)
+    if len(rec):
+        kpis += [("Glosas recursadas", len(rec), "int"),
+                 ("Recebido nos recursos", float(rec["Valor recebido"].sum()), "moeda"),
+                 ("Ainda a receber dos recursos", float(rec["Falta receber"].sum()), "moeda")]
+    if len(anom):
+        kpis.append(("Casos para verificar", len(anom), "int"))
+    detalhe_rec = dict(nome="Recursos de glosa", titulo="Guias glosadas e recursadas", df=rec, pdf=False,
+                       moeda=["Valor glosado", "Valor recebido", "Falta receber"],
+                       datas=["Data do atendimento", "Data da glosa", "Data do recurso"],
+                       total=["Valor glosado", "Valor recebido", "Falta receber"])
+    detalhe_anom = dict(nome="Para verificar", titulo="Casos para a equipe verificar", df=anom, pdf=False,
+                        moeda=["Valor pago"], datas=["Data do atendimento", "Data de pagamento"])
     return dict(
         titulo="Relatório de Glosas", subtitulo="Itens glosados pelas operadoras, por guia e lote",
         info=info, kpis=kpis,
         resumos=[agrupa("Motivo da glosa", "Glosas por motivo"), agrupa("Operadora", "Glosas por operadora/plano"),
                  agrupa("Lote" if tem_lote else "Protocolo", "Glosas por lote" if tem_lote else "Glosas por protocolo")],
-        detalhes=[detalhe])
+        detalhes=[detalhe, detalhe_rec, detalhe_anom])
 
 
 def spec_faturamento(res, arquivos_fat=None, arquivos_demo=None):

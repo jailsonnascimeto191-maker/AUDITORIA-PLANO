@@ -47,13 +47,19 @@ COLUNAS = {
     "Alertas": "alertas",
     "Rede": "rede",
     "Complemento recebido": "complemento",
+    "Glosa original": "glosa_original",
+    "Data da glosa": "data_glosa",
+    "Situação do recurso": "recurso_situacao",
+    "Protocolo do recurso": "recurso_protocolo",
+    "Data do recurso": "recurso_data",
+    "Recebido no recurso": "recurso_recebido",
     "Vínculo": "vinculo",
 }
 NUMERICAS = {"valor_informado", "valor_pago", "valor_glosa", "quantidade", "valor_unitario",
-             "quantidade_liberada", "valor_referencia", "diferenca", "complemento"}
+             "quantidade_liberada", "valor_referencia", "diferenca", "complemento", "glosa_original",
+             "recurso_recebido"}
 # campos alterados por um vínculo entre arquivos (guardados em orig_json para poder desfazer)
-CAMPOS_VINCULO = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
-                  "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"]
+CAMPOS_VINCULO = me.CAMPOS_LIGACAO
 
 
 def _conectar():
@@ -223,9 +229,12 @@ def carregar_itens(desde_iso=None, operadoras_sel=None, somente_glosas=False):
             params,
         )
     for c in ("Valor informado", "Valor pago", "Valor da glosa", "Diferença sem justificativa",
-              "Complemento recebido"):
+              "Complemento recebido", "Glosa original", "Recebido no recurso"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    for c in ("Data da glosa", "Situação do recurso", "Protocolo do recurso", "Data do recurso", "Vínculo", "Alertas"):
+        if c in df.columns:
+            df[c] = df[c].fillna("")
     for c in ("Quantidade", "Quantidade liberada", "Valor unitário", "Valor de referência"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -291,8 +300,11 @@ def _itens_operadora(conn, operadora):
         f"FROM demonstrativo_itens i JOIN demonstrativos d ON d.id = i.demonstrativo_id WHERE i.operadora = ?",
         (operadora,),
     )
-    for c in ("Valor informado", "Valor pago", "Valor da glosa", "Diferença sem justificativa", "Complemento recebido"):
+    for c in ("Valor informado", "Valor pago", "Valor da glosa", "Diferença sem justificativa", "Complemento recebido",
+              "Glosa original", "Recebido no recurso"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ("Data da glosa", "Situação do recurso", "Protocolo do recurso", "Data do recurso"):
+        df[c] = df[c].fillna("")
     df["Vínculo"] = df["Vínculo"].fillna("")
     df.index = df["_id"].astype(int)
     return df

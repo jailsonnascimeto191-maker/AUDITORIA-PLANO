@@ -35,8 +35,8 @@ MAX_PROPORCAO_NORMAL = 0.1
 MIN_TOKEN = 6            # protocolos com menos dígitos não entram (não dá para separar tipo de contador)
 MAX_PROFUNDIDADE = 8
 
-STATUS_RECURSO_PAGO = "Glosa revertida em recurso"
-STATUS_RECURSO_PARCIAL = "Recurso pago em parte"
+STATUS_RECURSO_PAGO = me.STATUS_RECURSO_PAGO
+STATUS_RECURSO_PARCIAL = me.STATUS_RECURSO_PARCIAL
 ALERTA_SEM_ORIGINAL = "Lote de reapresentação: atendimento original não encontrado (pode estar em outro demonstrativo)"
 ALERTA_VARIOS_ORIGINAIS = "Lote de reapresentação com mais de um atendimento original possível: conferir"
 ALERTA_ACIMA = "Recebeu mais que o valor informado somando a reapresentação: conferir (pode ser diferença de tabela)"
@@ -255,9 +255,8 @@ def aplicar_reapresentacao(df, a, k, origem=None, familia_k=""):
     """Liga o atendimento original (a) e a reapresentação (k), sem apagar nenhuma linha.
     A reapresentação deixa de contar como atendimento novo; o original passa a mostrar o que foi recuperado.
     Devolve os valores originais das duas linhas (para poder desfazer)."""
-    campos = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
-              "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"]
-    orig = {x: {c: df.at[x, c] if c in df.columns else None for c in campos} for x in (a, k)}
+    me._garantir_colunas_recurso(df)
+    orig = {x: {c: df.at[x, c] if c in df.columns else None for c in me.CAMPOS_LIGACAO} for x in (a, k)}
     origem = origem or (lambda x: "")
     onde = lambda x: f", {origem(x)}" if origem(x) else ""
     inf_a = me._num(df.at[a, "Valor informado"])
@@ -274,9 +273,28 @@ def aplicar_reapresentacao(df, a, k, origem=None, familia_k=""):
                  if x and not x.startswith(("Pago ", "Sem valor", "Possível pagamento em partes"))]
     total = pa + ja + pk
     falta_antes = glosa_a + dif_a
+    # história do recurso (vale também quando o mesmo original é reapresentado mais de uma vez)
+    ja_recurso = str(df.at[a, "Situação do recurso"] or "").strip() != ""
+    glosado = me._num(df.at[a, "Glosa original"]) if ja_recurso else round(falta_antes, 2)
+    prot_a = str(df.at[a, "Protocolo"] or "").strip()
+    prot_k = str(df.at[k, "Protocolo"] or "").strip()
+    if glosado > TOL:
+        recebido = round((me._num(df.at[a, "Recebido no recurso"]) if ja_recurso else 0.0) + pk, 2)
+        protocolos = [x for x in str(df.at[a, "Protocolo do recurso"] or "").split("; ") if x] if ja_recurso else []
+        if prot_k and prot_k not in protocolos:
+            protocolos.append(prot_k)
+        if not ja_recurso:
+            df.at[a, "Data da glosa"] = dt_a
+        df.at[a, "Glosa original"] = glosado
+        df.at[a, "Situação do recurso"] = me.situacao_recurso(glosado, recebido)
+        df.at[a, "Protocolo do recurso"] = "; ".join(protocolos)
+        df.at[a, "Data do recurso"] = dt_k
+        df.at[a, "Recebido no recurso"] = recebido
+    historia = (f"Glosado em {df.at[a, 'Data da glosa'] or dt_a}" + (f" no protocolo {prot_a}" if prot_a else "")
+                + (f" ({motivo_a})" if justificada else "") + f": {me._br_valor(glosado)}. ") if glosado > TOL else ""
 
     if pk <= TOL:
-        nota = f"Reapresentado no {lote_k} em {dt_k} (guia {guia_k}{onde(k)}) e não pago"
+        nota = historia + f"Reapresentado no {lote_k} em {dt_k} (guia {guia_k}{onde(k)}) e não pago"
         df.at[a, "Vínculo"] = nota
         df.at[k, "Status da glosa"] = me.STATUS_GLOSA_MANTIDA
     else:
@@ -296,7 +314,7 @@ def aplicar_reapresentacao(df, a, k, origem=None, familia_k=""):
         df.at[a, "Status da glosa"] = status
         if status in (me.STATUS_PAGO_EM_PARTES,) and not justificada:
             df.at[a, "Motivo da glosa"] = ""
-        nota = f"Recebido {me._br_valor(pk)} no {lote_k} em {dt_k} (guia {guia_k}{onde(k)})"
+        nota = historia + f"Recebido {me._br_valor(pk)} no {lote_k} em {dt_k} (guia {guia_k}{onde(k)})"
         df.at[a, "Vínculo"] = nota
         extra = [f"{status}: {me._br_valor(pa)} em {dt_a} + {me._br_valor(pk)} em {dt_k}"] \
             if status in (STATUS_RECURSO_PAGO, STATUS_RECURSO_PARCIAL, me.STATUS_PAGO_EM_PARTES) else []

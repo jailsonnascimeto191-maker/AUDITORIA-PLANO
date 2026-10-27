@@ -62,8 +62,20 @@ COLUNAS_PADRAO_GLOSAS = [
 # Colunas novas (ficam sempre depois das originais)
 COLUNAS_EXTRAS = ["Quantidade", "Quantidade liberada", "Valor unitário", "Rede", "Lote", "Status da glosa",
                   "Data de pagamento", "Código da glosa", "Valor de referência", "Fonte do valor informado",
-                  "Diferença sem justificativa", "Complemento recebido", "Vínculo", "Alertas"]
+                  "Diferença sem justificativa", "Complemento recebido",
+                  # recurso de glosa: a glosa original e o que voltou depois (em outro crédito/protocolo)
+                  "Glosa original", "Data da glosa", "Situação do recurso", "Protocolo do recurso", "Data do recurso",
+                  "Recebido no recurso",
+                  "Vínculo", "Alertas"]
 COLUNAS_COMPLETAS = COLUNAS_PADRAO_GLOSAS + COLUNAS_EXTRAS
+COLUNAS_RECURSO = ["Glosa original", "Data da glosa", "Situação do recurso", "Protocolo do recurso", "Data do recurso",
+                   "Recebido no recurso"]
+RECURSO_RECEBIDO = "Recebido"
+RECURSO_PARCIAL = "Recebido em parte"
+RECURSO_NAO_PAGO = "Não pago"
+# campos alterados quando duas aparições do mesmo atendimento são ligadas (guardados para poder desfazer)
+CAMPOS_LIGACAO = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
+                  "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"] + COLUNAS_RECURSO
 
 PLANO_AUTOMATICO = "Identificar pelo arquivo"
 TOL = 0.02
@@ -478,6 +490,15 @@ def _preparar_tabela(raw, campos=None, com_origem=False):
         return _remover_totais(df)
 
     cabecalho = [_txt(c) for c in raw.iloc[cab_i].tolist()]
+    # cabeçalho em duas linhas: coluna sem título que tem o título na linha de cima
+    # (ex.: "Liberado para crédito em ... | Justificativa" acima de "Data do Evento | Nome | ...")
+    if cab_i > 0:
+        acima = [_txt(c) for c in raw.iloc[cab_i - 1].tolist()]
+        for j, cel in enumerate(cabecalho):
+            t = acima[j] if j < len(acima) else ""
+            if not cel and t and not re.fullmatch(r"[\d.,/ R$-]+", t) and not re.match(r"^[-=_*.]{3,}", t) \
+                    and len(t) <= 40:
+                cabecalho[j] = t
     nomes, usados = [], {}
     for j, cel in enumerate(cabecalho):
         n = cel or f"COL_{j}"
@@ -743,6 +764,21 @@ def _montar_saida(df, mapa, pag_global="", lote_global="", pag_por_linha=None):
     for c in ["Data do evento", "Protocolo", "Doc Original", "Nome do paciente", "Lote", "Data de pagamento"]:
         out[c] = out[c].replace(["", "-", "Não identificado"], pd.NA).ffill()
         out[c] = out[c].fillna("Não identificado" if c == "Nome do paciente" else "-")
+
+    # justificativa escrita na linha da guia vale para os procedimentos DESSA guia (nunca passa para a próxima)
+    if out["_linha_guia"].any():
+        bloco = out["_linha_guia"].cumsum()
+        dentro = bloco > 0
+        for c in ("Motivo da glosa", "Código da glosa"):
+            if c in out.columns:
+                txt = out[c].fillna("").astype(str).str.strip()
+                da_guia = txt.where(out["_linha_guia"]).groupby(bloco).transform("first").fillna("")
+                usar = dentro & ~out["_linha_guia"] & txt.eq("") & da_guia.ne("")
+                out.loc[usar, c] = da_guia[usar]
+        if out["_status_glosa"].notna().any():
+            st_guia = out["_status_glosa"].where(out["_linha_guia"]).groupby(bloco).transform("first")
+            usar = dentro & ~out["_linha_guia"] & out["_status_glosa"].isna() & st_guia.notna()
+            out.loc[usar, "_status_glosa"] = st_guia[usar]
 
     out = out[~out["_linha_guia"]].copy()
     out["_informado_no_arquivo"] = "Valor informado" in mapa
@@ -1048,6 +1084,23 @@ def _ultima_data(serie):
     return dts.max().strftime("%d/%m/%Y") if len(dts) else "-"
 
 
+def _historico_creditos(d):
+    """Para cada grupo (mesmo atendimento), a lista dos créditos em ordem de data: data, protocolo, valor pago,
+    motivo. É o que permite contar a história 'glosado no crédito X, recursado e pago no crédito Y'."""
+    x = d.assign(_p=pd.to_numeric(d["Valor pago"], errors="coerce").fillna(0.0))
+    for c in ("Protocolo", "Motivo da glosa", "Código da glosa"):
+        if c not in x.columns:
+            x[c] = ""
+    res = {}
+    for (grp, cred), y in x.groupby(["_grupo", "_cred"], sort=False):
+        res.setdefault(grp, []).append(dict(
+            data=cred if cred not in ("", "-") else "", protocolo=_juntar_texto(y["Protocolo"]),
+            pago=round(float(y["_p"].sum()), 2), motivo=_juntar_texto(y["Motivo da glosa"]),
+            codigo=_juntar_texto(y["Código da glosa"])))
+    return pd.Series({k: sorted(v, key=lambda c: (_data_ord(c["data"]), c["data"])) for k, v in res.items()},
+                     dtype=object)
+
+
 def _consolidar(d):
     """Junta as linhas do mesmo atendimento (mesma guia + código + data + paciente): várias sessões na
     mesma guia, pagamento em mais de um crédito (complemento/recurso)."""
@@ -1062,6 +1115,7 @@ def _consolidar(d):
     unicos = d[tamanho == 1].copy()
     unicos["_linhas"] = 1
     unicos["_creditos"] = unicos["Data de pagamento"].map(lambda x: 0 if x in ("", "-") else 1)
+    unicos["_hist"] = None
     d = d[tamanho > 1]
     if d.empty:
         return unicos.drop(columns=["_grupo", "_k_pac"]).reset_index(drop=True)
@@ -1092,6 +1146,7 @@ def _consolidar(d):
     g["_creditos"] = d.groupby("_grupo", sort=False)["Data de pagamento"].agg(
         lambda s: len({x for x in s if x not in ("", "-")}))
     g["_ordem"] = d.groupby("_grupo", sort=False).apply(lambda x: x.index.min(), include_groups=False)
+    g["_hist"] = _historico_creditos(d)
     unicos["_ordem"] = unicos.index
     for c in ("Protocolo", "Lote", "Doc Original"):
         if c in g.columns:
@@ -1345,6 +1400,66 @@ def encontrar_pares(df, grupo=None, exigir_em=None):
 
 
 STATUS_GLOSA_MANTIDA = "Glosa mantida em novo crédito"
+STATUS_RECURSO_PAGO = "Glosa revertida em recurso"
+STATUS_RECURSO_PARCIAL = "Recurso pago em parte"
+
+
+def situacao_recurso(glosado, recebido):
+    if recebido >= glosado - TOL:
+        return RECURSO_RECEBIDO
+    return RECURSO_PARCIAL if recebido > TOL else RECURSO_NAO_PAGO
+
+
+def _sem_avisos_de_credito(alertas):
+    return [x for x in str(alertas or "").split("; ")
+            if x and not x.startswith(("Pago em ", "Glosa revertida: pago em "))]
+
+
+def _recurso_mesma_guia(out):
+    """A mesma guia glosada num crédito e que volta em créditos seguintes (recurso): guarda a história
+    (quando e em que protocolo glosou, por qual motivo, em que protocolo voltou e quanto recebeu)."""
+    for c in COLUNAS_RECURSO:
+        if c not in out.columns:
+            out[c] = 0.0 if c in ("Glosa original", "Recebido no recurso") else ""
+    if "_hist" not in out.columns:
+        return out, 0
+    n = 0
+    for i in out.index:
+        h = out.at[i, "_hist"]
+        if not isinstance(h, list) or len(h) < 2:
+            continue
+        inf = _num(out.at[i, "Valor informado"])
+        p1 = h[0]
+        mot1 = p1["motivo"].strip()
+        justificado = bool(mot1) and not mot1.startswith(_MOTIVOS_GERADOS)
+        glosado = round(inf - p1["pago"], 2)
+        if inf <= TOL or glosado <= TOL or not (justificado or p1["pago"] <= TOL):
+            continue
+        depois = h[1:]
+        recebido = round(sum(x["pago"] for x in depois), 2)
+        sit = situacao_recurso(glosado, recebido)
+        prot_rec = "; ".join(dict.fromkeys(x["protocolo"] for x in depois if x["protocolo"]))
+        data_rec = depois[-1]["data"]
+        out.at[i, "Glosa original"] = glosado
+        out.at[i, "Data da glosa"] = p1["data"]
+        out.at[i, "Situação do recurso"] = sit
+        out.at[i, "Protocolo do recurso"] = prot_rec
+        out.at[i, "Data do recurso"] = data_rec
+        out.at[i, "Recebido no recurso"] = recebido
+        if justificado:
+            out.at[i, "Motivo da glosa"] = mot1
+        if sit == RECURSO_RECEBIDO:
+            out.at[i, "Status da glosa"] = STATUS_RECURSO_PAGO
+        elif sit == RECURSO_PARCIAL:
+            out.at[i, "Status da glosa"] = STATUS_RECURSO_PARCIAL
+        motivo_txt = f" ({mot1})" if justificado else ""
+        prot1 = f" no protocolo {p1['protocolo']}" if p1["protocolo"] else ""
+        volta = (f"recebido {_br_valor(recebido)} em {data_rec}" if recebido > TOL else f"não pago em {data_rec}")
+        out.at[i, "Vínculo"] = (f"Glosado em {p1['data']}{prot1}{motivo_txt}: {_br_valor(glosado)}. "
+                                f"Recurso no protocolo {prot_rec or '-'}: {volta}")
+        out.at[i, "Alertas"] = "; ".join(_sem_avisos_de_credito(out.at[i, "Alertas"]))
+        n += 1
+    return out, n
 
 
 def encontrar_mesma_guia(df, grupo, exigir_em=None):
@@ -1413,8 +1528,8 @@ def aplicar_vinculo_guia(df, a, seguintes, tipo, origem=None, ref=None):
     if isinstance(seguintes, (int, float)) or not hasattr(seguintes, "__iter__"):
         seguintes = [seguintes]
     origem = origem or (lambda k: "")
-    campos = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
-              "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"]
+    _garantir_colunas_recurso(df)
+    campos = CAMPOS_LIGACAO
     orig = {k: {c: df.at[k, c] if c in df.columns else None for c in campos} for k in [a] + list(seguintes)}
     onde = lambda k: f" ({origem(k)})" if origem(k) else ""
     if ref is not None and pd.notna(ref) and abs(_num(df.at[a, "Valor informado"]) - ref) > TOL:
@@ -1459,7 +1574,42 @@ def aplicar_vinculo_guia(df, a, seguintes, tipo, origem=None, ref=None):
         for k, _ in pagos_depois:
             df.at[k, "Status da glosa"] = STATUS_GLOSA_MANTIDA
             df.at[k, "Vínculo"] = f"Mesma guia já glosada em {dt_a}{onde(a)}"
+    # história do recurso no atendimento original
+    motivo_a = str(orig[a].get("Motivo da glosa") or "")
+    justificada = bool(motivo_a.strip()) and not motivo_a.startswith(_MOTIVOS_GERADOS)
+    ref_v = _num(df.at[a, "Valor informado"])
+    glosado = round(ref_v - pa, 2)
+    if tipo in ("recurso", "glosa") or (tipo == "partes" and justificada):
+        if glosado > TOL:
+            recebido = round(sum(pk for _, pk in pagos_depois), 2)
+            sit = situacao_recurso(glosado, recebido)
+            prot = "; ".join(dict.fromkeys(str(df.at[k, "Protocolo"]) for k, _ in pagos_depois
+                                           if str(df.at[k, "Protocolo"] or "").strip() not in ("", "-")))
+            dt_rec = df.at[pagos_depois[-1][0], "Data de pagamento"]
+            df.at[a, "Glosa original"] = glosado
+            df.at[a, "Data da glosa"] = dt_a
+            df.at[a, "Situação do recurso"] = sit
+            df.at[a, "Protocolo do recurso"] = prot
+            df.at[a, "Data do recurso"] = dt_rec
+            df.at[a, "Recebido no recurso"] = recebido
+            if sit == RECURSO_RECEBIDO:
+                df.at[a, "Status da glosa"] = STATUS_RECURSO_PAGO
+            elif sit == RECURSO_PARCIAL:
+                df.at[a, "Status da glosa"] = STATUS_RECURSO_PARCIAL
+            if justificada:
+                df.at[a, "Motivo da glosa"] = motivo_a
+            prot_a = str(df.at[a, "Protocolo"] or "").strip()
+            volta = f"recebido {_br_valor(recebido)} em {dt_rec}" if recebido > TOL else f"não pago em {dt_rec}"
+            df.at[a, "Vínculo"] = (f"Glosado em {dt_a}" + (f" no protocolo {prot_a}" if prot_a not in ("", "-") else "")
+                                   + (f" ({motivo_a})" if justificada else "") + f": {_br_valor(glosado)}. "
+                                   f"Recurso no protocolo {prot or '-'}{onde(pagos_depois[-1][0])}: {volta}")
     return orig
+
+
+def _garantir_colunas_recurso(df):
+    for c in COLUNAS_RECURSO:
+        if c not in df.columns:
+            df[c] = 0.0 if c in ("Glosa original", "Recebido no recurso") else ""
 
 
 def _br_valor(v):
@@ -1470,8 +1620,8 @@ def aplicar_vinculo(df, a, b, origem_a="", origem_b=""):
     """Liga o principal (a) e o complemento (b) SEM juntar as linhas: o principal fica sem glosa e mostra o
     complemento recebido; o complemento deixa de contar como atendimento novo (valor informado zero).
     Modifica df no lugar e devolve os valores originais das duas linhas (para poder desfazer)."""
-    campos = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
-              "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"]
+    _garantir_colunas_recurso(df)
+    campos = CAMPOS_LIGACAO
     orig = {k: {c: df.at[k, c] if c in df.columns else None for c in campos} for k in (a, b)}
     pago_a, pago_b = _num(df.at[a, "Valor pago"]), _num(df.at[b, "Valor pago"])
     dt_a, dt_b = df.at[a, "Data de pagamento"], df.at[b, "Data de pagamento"]
@@ -1551,6 +1701,7 @@ def finalizar(linhas, operadora, conhecimento=None):
     except Exception:  # padrões são um extra: nunca impedem a leitura
         familias, analise, tipos, reap = [], None, {}, None
     out, refs, codigos = _analisar(g, operadora, conhecimento, sem_aprender=reap)
+    out, resumo["recursos"] = _recurso_mesma_guia(out)
     if familias:
         out, resumo["padroes"] = motor_padroes.ligar_no_arquivo(out, familias, tipos, analise)
     out, resumo["complementos"] = _juntar_complementos(out)
