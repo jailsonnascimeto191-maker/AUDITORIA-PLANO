@@ -693,10 +693,10 @@ def indicadores_cadastro():
 
 
 @st.cache_resource(show_spinner=False)
-def _inicializar_bancos(chave_banco):
-    """Cria/migra os bancos uma única vez por servidor e por banco configurado (antes rodava
-    a cada clique). Se o DATABASE_URL mudar nos Secrets, roda de novo para o banco novo.
-    Retorna a mensagem de erro, se houver."""
+def _inicializar_bancos(chave_banco, versao_esquema=""):
+    """Cria/migra os bancos uma única vez por servidor, por banco configurado e por versão da estrutura das
+    tabelas. Se o DATABASE_URL mudar nos Secrets, ou se uma atualização do sistema trouxer colunas novas,
+    roda de novo (sem precisar reiniciar o app). Retorna a mensagem de erro, se houver."""
     try:
         init_db()
         motor_historico.init_historico()
@@ -707,7 +707,9 @@ def _inicializar_bancos(chave_banco):
     return None
 
 
-_erro_init = _inicializar_bancos(banco.chave_configuracao())
+# muda sempre que uma atualização acrescenta colunas: força criar as que faltam no banco
+_VERSAO_ESQUEMA = "|".join(list(motor_historico.COLUNAS.values()) + motor_extracao.COLUNAS_COMPLETAS)
+_erro_init = _inicializar_bancos(banco.chave_configuracao(), _VERSAO_ESQUEMA)
 if _erro_init:
     _inicializar_bancos.clear()  # tenta de novo na próxima interação
     st.error(_erro_init)
