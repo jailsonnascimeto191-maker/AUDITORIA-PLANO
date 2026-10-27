@@ -909,9 +909,15 @@ def mostrar_flash():
 
 
 def recursos_e_verificacao(df, chave):
-    """Glosas recursadas (o que voltou e quanto recebemos) e casos fora do padrão para a equipe verificar."""
-    anom = motor_verificacao.anomalias(df)
-    rec = motor_verificacao.recursos(df)
+    """Glosas recursadas (o que voltou e quanto recebemos) e casos fora do padrão para a equipe verificar.
+    É um complemento: se falhar, avisa e o resto da tela continua funcionando."""
+    try:
+        anom = motor_verificacao.anomalias(df)
+        rec = motor_verificacao.recursos(df)
+    except Exception:
+        st.info("Não foi possível montar a lista de recursos e de casos para verificar agora. "
+                "Atualize a página; se continuar, reinicie o app.")
+        return
     if len(anom):
         tipos = anom["Tipo"].value_counts()
         st.warning(f"**{len(anom)} caso(s) para verificar**: "

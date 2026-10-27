@@ -584,8 +584,12 @@ def spec_glosas(df_glosas, df_completo=None, arquivos=None):
     # guias glosadas que voltaram em recurso, e anomalias para a equipe verificar (só no Excel)
     import motor_verificacao as mv
     base_rec = df_completo if df_completo is not None else df_glosas
-    rec = mv.recursos(base_rec)
-    anom = mv.anomalias(base_rec)
+    try:
+        rec = mv.recursos(base_rec)
+        anom = mv.anomalias(base_rec)
+    except Exception:  # complemento do relatório: nunca impede gerar o principal
+        rec = pd.DataFrame(columns=mv.COLUNAS_RECURSO)
+        anom = pd.DataFrame(columns=mv.COLUNAS_ANOMALIA)
     if len(rec):
         kpis += [("Glosas recursadas", len(rec), "int"),
                  ("Recebido nos recursos", float(rec["Valor recebido"].sum()), "moeda"),

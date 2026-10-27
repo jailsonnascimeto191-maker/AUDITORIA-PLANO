@@ -10,6 +10,15 @@ import pandas as pd
 import motor_extracao as me
 import motor_padroes as mp
 
+# textos fixos aqui (e não lidos de motor_extracao): se o servidor ainda tiver uma versão antiga daquele módulo
+# na memória durante uma atualização, esta parte continua funcionando
+RECURSO_RECEBIDO = getattr(me, "RECURSO_RECEBIDO", "Recebido")
+RECURSO_PARCIAL = getattr(me, "RECURSO_PARCIAL", "Recebido em parte")
+STATUS_COMPLEMENTO = getattr(me, "STATUS_COMPLEMENTO", "Complemento de pagamento")
+STATUS_GLOSA_MANTIDA = getattr(me, "STATUS_GLOSA_MANTIDA", "Glosa mantida em novo crédito")
+STATUS_DUPLICIDADE = getattr(me, "STATUS_DUPLICIDADE", "Possível pagamento em duplicidade")
+TOL = getattr(me, "TOL", 0.02)
+
 TIPO_COBRANCA_DOBRO = "Possível cobrança em dobro"
 TIPO_PAGO_REPETIDO = "Pagamento repetido"
 TIPO_ACIMA = "Recebeu mais que o informado"
@@ -97,15 +106,15 @@ def anomalias(df):
     guia = _texto(d, "Doc Original")
     chave = mp.chave_atendimento(d)
     # linhas que representam um atendimento pago (não a segunda parte de um pagamento já ligado)
-    atendimento_pago = (pago > me.TOL) & ~status.isin([me.STATUS_COMPLEMENTO, me.STATUS_GLOSA_MANTIDA,
-                                                       me.STATUS_DUPLICIDADE])
+    atendimento_pago = (pago > TOL) & ~status.isin([STATUS_COMPLEMENTO, STATUS_GLOSA_MANTIDA,
+                                                       STATUS_DUPLICIDADE])
     por_chave = {}
     for i in d.index[atendimento_pago]:
         por_chave.setdefault(chave[i], []).append(i)
 
     # 1) glosa revertida em recurso, mas o mesmo atendimento já foi pago em outra guia
     situ = _texto(d, "Situação do recurso")
-    for i in d.index[situ.isin([me.RECURSO_RECEBIDO, me.RECURSO_PARCIAL])]:
+    for i in d.index[situ.isin([RECURSO_RECEBIDO, RECURSO_PARCIAL])]:
         outras = [j for j in por_chave.get(chave[i], []) if j != i and guia[j] not in ("", "-") and guia[j] != guia[i]]
         if not outras:
             continue
@@ -122,7 +131,7 @@ def anomalias(df):
         linhas.append(_linha(d, i, TIPO_COBRANCA_DOBRO, oque))
 
     # 2) mesma guia paga por inteiro mais de uma vez
-    for i in d.index[status.eq(me.STATUS_DUPLICIDADE)]:
+    for i in d.index[status.eq(STATUS_DUPLICIDADE)]:
         linhas.append(_linha(d, i, TIPO_PAGO_REPETIDO,
                              "A mesma guia foi paga por inteiro mais de uma vez. Confira no extrato se o valor "
                              "entrou duas vezes; se sim, o plano deve pedir a devolução."
