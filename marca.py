@@ -92,19 +92,20 @@ def _olho(expressao):
 
 
 def _item(item):
+    # lupa, prancheta e moeda ficam na mãozinha (a pata da frente levantada), abaixo do focinho
     if item == "lupa":
-        return (f"<g class='zu-lupa'><path d='M196 128 L214 146' stroke='{C['faixa']}' stroke-width='8' stroke-linecap='round'/>"
-                f"<circle cx='212' cy='108' r='18' fill='#FFFFFF' fill-opacity='.4' stroke='{C['destaque']}' stroke-width='6'/>"
-                f"<path d='M202 102 Q206 96 214 96' stroke='#FFFFFF' stroke-width='3.5' fill='none' stroke-linecap='round'/></g>")
+        return (f"<g class='zu-lupa'><path d='M190 134 L206 128' stroke='{C['faixa']}' stroke-width='7' stroke-linecap='round'/>"
+                f"<circle cx='220' cy='122' r='15' fill='#FFFFFF' fill-opacity='.45' stroke='{C['destaque']}' stroke-width='5.5'/>"
+                f"<path d='M211 117 Q215 111 222 111' stroke='#FFFFFF' stroke-width='3' fill='none' stroke-linecap='round'/></g>")
     if item == "prancheta":
-        return (f"<g><rect x='186' y='92' width='44' height='54' rx='6' fill='#FFFFFF' stroke='{C['faixa']}' stroke-width='3'/>"
-                f"<rect x='198' y='87' width='20' height='10' rx='3' fill='{C['faixa']}'/>"
-                f"<path d='M194 110 L208 110 M194 121 L222 121 M194 132 L216 132' stroke='{C['suave']}' stroke-width='3.5' stroke-linecap='round'/>"
-                f"<path d='M210 106 L215 112 L225 101' stroke='{C['ok']}' stroke-width='4.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></g>")
+        return (f"<g><rect x='190' y='108' width='40' height='46' rx='5' fill='#FFFFFF' stroke='{C['faixa']}' stroke-width='3'/>"
+                f"<rect x='201' y='104' width='18' height='8' rx='3' fill='{C['faixa']}'/>"
+                f"<path d='M198 122 L210 122 M198 132 L222 132 M198 142 L216 142' stroke='{C['suave']}' stroke-width='3' stroke-linecap='round'/>"
+                f"<path d='M212 120 L216 125 L225 115' stroke='{C['ok']}' stroke-width='4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></g>")
     if item == "moeda":
-        return (f"<g><circle cx='214' cy='120' r='20' fill='{C['destaque']}' stroke='{C['faixa']}' stroke-width='4'/>"
-                f"<text x='214' y='128' text-anchor='middle' font-family='Figtree, sans-serif' font-weight='800' "
-                f"font-size='20' fill='#6E4519'>R$</text></g>")
+        return (f"<g><circle cx='212' cy='130' r='17' fill='{C['destaque']}' stroke='{C['faixa']}' stroke-width='3.5'/>"
+                f"<text x='212' y='137' text-anchor='middle' font-family='Figtree, sans-serif' font-weight='800' "
+                f"font-size='17' fill='#6E4519'>R$</text></g>")
     if item == "alerta":
         return (f"<g><path d='M212 22 L236 64 L188 64 Z' fill='{C['destaque']}' stroke='{C['faixa']}' stroke-width='3' stroke-linejoin='round'/>"
                 f"<path d='M212 36 L212 50' stroke='{C['tinta']}' stroke-width='5.5' stroke-linecap='round'/>"
@@ -112,8 +113,23 @@ def _item(item):
     return ""
 
 
+def _braco():
+    """Pata da frente levantada, vinda do peito até a frente do corpo."""
+    return (f"<path d='M150 116 Q166 134 188 134' fill='none' stroke='{C['pele']}' stroke-width='13' stroke-linecap='round'/>")
+
+
+def _mao():
+    """A mãozinha, desenhada por cima do objeto (segurando)."""
+    return (f"<ellipse cx='191' cy='133' rx='8' ry='7' fill='{C['pele']}' stroke='{C['faixa']}' stroke-opacity='.35' "
+            f"stroke-width='1.6'/>"
+            f"<path d='M188 129 Q192 131 189 136' fill='none' stroke='{C['faixa']}' stroke-opacity='.45' stroke-width='1.4' "
+            f"stroke-linecap='round'/>")
+
+
 def _tatu(expressao="normal", item=None):
     """Tatu de perfil (área 0 0 240 160)."""
+    segura = item in ("lupa", "prancheta", "moeda")
+    patas = ((60, '#E3C7A3'), (134, '#E3C7A3'), (44, C['pele'])) + (() if segura else ((114, C['pele']),))
     faixas = "".join(
         f"<path d='M{x} {y1} Q{x - 10} 82 {x} 121' fill='none' stroke='{C['faixa']}' stroke-width='5' stroke-linecap='round'/>"
         for x, y1 in ((76, 46), (104, 36), (132, 40)))
@@ -130,7 +146,7 @@ def _tatu(expressao="normal", item=None):
                   f"Q{x + 27} 139 {x + 19} 138 L{x + 18} 116 Z' fill='{cor}'/>"
                   f"<path d='M{x + 4} 149 Q{x + 12} 152 {x + 22} 149' fill='none' stroke='#FFFFFF' "
                   f"stroke-opacity='.45' stroke-width='2' stroke-linecap='round'/>"
-                  for x, cor in ((60, '#E3C7A3'), (134, '#E3C7A3'), (44, C['pele']), (114, C['pele'])))
+                  for x, cor in patas)
         # carapaça
         + f"<path d='M32 124 Q30 40 104 34 Q170 36 168 124 Z' fill='{C['caramelo']}'/>"
         + faixas + escamas
@@ -148,7 +164,9 @@ def _tatu(expressao="normal", item=None):
           f"<path d='M196 100 Q202 105 208 100' fill='none' stroke='{C['tinta']}' stroke-width='3' stroke-linecap='round'/>"
           f"<ellipse cx='170' cy='97' rx='8' ry='5' fill='{C['nariz']}' fill-opacity='.4'/>"
         + _olho(expressao) + "</g>"
+        + (_braco() if segura else "")
         + _item(item)
+        + (_mao() if segura else "")
     )
 
 
@@ -181,22 +199,33 @@ def mascote_svg(tamanho=200, expressao="normal", item=None, rotulo=None):
 # --------------------------------------------------------------------------
 _CSS_CARREGANDO = """
 <style>
-.zu-pista { position: relative; width: 100%; max-width: 520px; height: 130px; overflow: hidden; }
-.zu-pista svg { position: absolute; left: 0; top: 0; }
-/* 0-14%: em pé na esquerda | 14-18%: enrola | 18-78%: rola | 78-82%: desenrola na direita | 82-92%: em pé | 92-100%: some */
-@keyframes zu-pe-opacidade { 0% { opacity: 0 } 4%, 13% { opacity: 1 } 16%, 80% { opacity: 0 } 83%, 91% { opacity: 1 } 97%, 100% { opacity: 0 } }
-@keyframes zu-pe-posicao { 0%, 79.9% { transform: translateX(0) } 80%, 100% { transform: translateX(var(--zu-dist, 340px)) } }
-@keyframes zu-bola-opacidade { 0%, 13% { opacity: 0 } 16%, 80% { opacity: 1 } 83%, 100% { opacity: 0 } }
-@keyframes zu-bola-rolar { 0%, 17% { transform: translateX(0) rotate(0deg) }
-                           79%, 100% { transform: translateX(var(--zu-dist, 340px)) rotate(780deg) } }
-@keyframes zu-sombra { 0%, 17% { transform: translateX(0) } 79%, 100% { transform: translateX(var(--zu-dist, 340px)) } }
-.zu-anim-pe { animation: zu-pe-opacidade 4.4s linear infinite, zu-pe-posicao 4.4s linear infinite; }
-.zu-anim-bola { animation: zu-bola-opacidade 4.4s linear infinite; }
-.zu-anim-bola .zu-roda { animation: zu-bola-rolar 4.4s cubic-bezier(.4,0,.6,1) infinite; }
-.zu-anim-sombra { animation: zu-sombra 4.4s cubic-bezier(.4,0,.6,1) infinite; }
+.zu-pista { position: relative; width: 100%; height: 130px; overflow: hidden; --zu-fim: calc(100% - 140px); }
+.zu-pista > div { position: absolute; left: 0; top: 0; width: 140px; height: 130px; }
+/* Um ciclo de 11s:
+   0-5% em pé na esquerda, olhando para a direita | 5-8% enrola | 8-42% rola até o fim
+   42-45% desenrola na direita | 45-51% em pé | 51-53% vira e olha para trás (de onde veio)
+   53-60% em pé, olhando para a esquerda | 60-63% enrola | 63-95% rola de volta
+   95-98% desenrola na esquerda | 98-100% vira para a direita (o ciclo recomeça) */
+@keyframes zu-dir-op { 0%, 5% { opacity: 1 } 8%, 42% { opacity: 0 } 45%, 51% { opacity: 1 } 52%, 97.5% { opacity: 0 }
+                       98.5%, 100% { opacity: 1 } }
+@keyframes zu-dir-pos { 0%, 20% { left: 0 } 20.1%, 60% { left: var(--zu-fim) } 60.1%, 100% { left: 0 } }
+@keyframes zu-esq-op { 0%, 51% { opacity: 0 } 52%, 60% { opacity: 1 } 63%, 95% { opacity: 0 } 98%, 98.4% { opacity: 1 }
+                       98.5%, 100% { opacity: 0 } }
+@keyframes zu-esq-pos2 { 0%, 70% { left: var(--zu-fim) } 70.1%, 100% { left: 0 } }
+@keyframes zu-bola-op { 0%, 5% { opacity: 0 } 8%, 42% { opacity: 1 } 45%, 60% { opacity: 0 } 63%, 95% { opacity: 1 }
+                        98%, 100% { opacity: 0 } }
+@keyframes zu-bola-pos { 0%, 8% { left: 0 } 42%, 63% { left: var(--zu-fim) } 95%, 100% { left: 0 } }
+@keyframes zu-bola-giro { 0%, 8% { transform: rotate(0deg) } 42%, 63% { transform: rotate(1440deg) }
+                          95%, 100% { transform: rotate(0deg) } }
+.zu-anim-dir { animation: zu-dir-op 11s linear infinite, zu-dir-pos 11s linear infinite; }
+.zu-anim-esq { animation: zu-esq-op 11s linear infinite, zu-esq-pos2 11s linear infinite; }
+.zu-anim-bola, .zu-anim-sombra { animation: zu-bola-pos 11s cubic-bezier(.45,0,.55,1) infinite; }
+.zu-anim-bola { animation-name: zu-bola-pos, zu-bola-op; animation-timing-function: cubic-bezier(.45,0,.55,1), linear; }
+.zu-anim-bola .zu-roda { width: 140px; height: 130px; transform-origin: 70px 70px;
+                         animation: zu-bola-giro 11s cubic-bezier(.45,0,.55,1) infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .zu-anim-pe, .zu-anim-bola, .zu-anim-bola .zu-roda, .zu-anim-sombra { animation: none; }
-  .zu-anim-bola { opacity: 0; }
+  .zu-anim-dir, .zu-anim-esq, .zu-anim-bola, .zu-anim-bola .zu-roda, .zu-anim-sombra { animation: none; }
+  .zu-anim-bola, .zu-anim-esq { opacity: 0; }
 }
 </style>
 """
@@ -206,16 +235,17 @@ def carregando_html(texto="Conferindo o demonstrativo...",
                     detalhe=None):
     """Tela de espera: o Zu se enrola em bola, rola pela pista e desenrola do outro lado."""
     detalhe = detalhe or f"{MASCOTE} está conferindo guia por guia. Arquivos grandes levam até um minuto."
-    sombra = (f"<svg class='zu-anim-sombra' width='140' height='130' viewBox='0 0 140 130'>"
-              f"<ellipse cx='70' cy='122' rx='44' ry='6' fill='{C['tinta']}' fill-opacity='.12'/></svg>")
-    em_pe = (f"<svg class='zu-anim-pe' width='140' height='130' viewBox='0 0 240 222'>"
-             f"<g transform='translate(0 58)'>{_tatu('atenta')}</g></svg>")
-    bola = (f"<div class='zu-anim-bola' style='position:absolute;left:0;top:0'>"
-            f"<div class='zu-roda' style='width:140px;height:130px;transform-origin:70px 70px'>"
+    sombra = (f"<div class='zu-anim-sombra'><svg width='140' height='130' viewBox='0 0 140 130'>"
+              f"<ellipse cx='70' cy='122' rx='44' ry='6' fill='{C['tinta']}' fill-opacity='.12'/></svg></div>")
+    para_direita = (f"<div class='zu-anim-dir'><svg width='140' height='130' viewBox='0 0 240 222'>"
+                    f"<g transform='translate(0 58)'>{_tatu('atenta')}</g></svg></div>")
+    para_esquerda = (f"<div class='zu-anim-esq' style='opacity:0'><svg width='140' height='130' viewBox='0 0 240 222'>"
+                     f"<g transform='translate(240 58) scale(-1 1)'>{_tatu('atenta')}</g></svg></div>")
+    bola = (f"<div class='zu-anim-bola' style='opacity:0'><div class='zu-roda'>"
             f"<svg width='140' height='130' viewBox='0 0 140 130'><g transform='translate(70 70)'>{_bola()}</g></svg>"
             f"</div></div>")
     return (_CSS_CARREGANDO +
             f"<div class='zu-carregando' role='status' aria-live='polite'>"
-            f"<div class='zu-pista' style='--zu-dist: 340px'>{sombra}{em_pe}{bola}</div>"
+            f"<div class='zu-pista'>{sombra}{para_direita}{para_esquerda}{bola}</div>"
             f"<div class='zu-carregando-titulo'>{texto}</div>"
             f"<div class='zu-carregando-sub'>{detalhe}</div></div>")
