@@ -64,21 +64,32 @@ def init_db_seguranca():
                 cur.execute(f"ALTER TABLE usuarios ADD COLUMN {nome} {tipo}")
         conn.commit()
 
-        # Garante um administrador. A senha inicial vem de ADMIN_PASSWORD
-        # (variável de ambiente ou secrets do Streamlit); sem ela, usa a antiga,
-        # mas obriga a troca no primeiro acesso.
-        if not cur.execute("SELECT 1 FROM usuarios WHERE role='Administrador' LIMIT 1").fetchone():
-            senha_ini = _senha_inicial_admin()
-            _inserir(cur, "admin", senha_ini or SENHA_PADRAO_ANTIGA, "Administrador", trocar=True)
+        # O primeiro administrador só é criado com a senha de ADMIN_PASSWORD (variável de ambiente ou Secrets
+        # do Streamlit). Não existe senha padrão: uma senha escrita no código público deixaria quem chegasse
+        # primeiro virar administrador.
+        senha_ini = _senha_inicial_admin()
+        if not cur.execute("SELECT 1 FROM usuarios WHERE role='Administrador' LIMIT 1").fetchone() and senha_ini:
+            _inserir(cur, "admin", senha_ini, "Administrador", trocar=True)
             conn.commit()
 
-        # Qualquer usuário que ainda use a senha padrão pública é obrigado a trocar.
-        for uid, h, salt, it in cur.execute(
-            "SELECT id, password_hash, salt, iteracoes FROM usuarios WHERE trocar_senha=0"
-        ).fetchall():
+        # Quem ainda usa a antiga senha padrão pública: essa senha deixa de valer. Com ADMIN_PASSWORD configurado,
+        # ela é trocada por ele (com troca obrigatória no próximo acesso); sem ele, o login com a senha antiga é recusado.
+        for uid, h, salt, it in cur.execute("SELECT id, password_hash, salt, iteracoes FROM usuarios").fetchall():
             if hmac.compare_digest(_hash(SENHA_PADRAO_ANTIGA, salt, it)[0], h):
-                cur.execute("UPDATE usuarios SET trocar_senha=1 WHERE id=?", (uid,))
+                if senha_ini:
+                    novo, novo_salt = _hash(senha_ini)
+                    cur.execute("UPDATE usuarios SET password_hash=?, salt=?, iteracoes=?, trocar_senha=1 WHERE id=?",
+                                (novo, novo_salt, ITERACOES, uid))
+                else:
+                    cur.execute("UPDATE usuarios SET trocar_senha=1 WHERE id=?", (uid,))
         conn.commit()
+
+
+def existe_administrador():
+    """Há pelo menos um administrador ativo? Sem ele, o sistema pede para configurar ADMIN_PASSWORD."""
+    with _conn() as conn:
+        return bool(conn.execute(
+            "SELECT 1 FROM usuarios WHERE role='Administrador' AND ativo=1 LIMIT 1").fetchone())
 
 
 def _senha_inicial_admin():
@@ -179,6 +190,11 @@ def autenticar_usuario(username, senha):
             return False, None, f"Muitas tentativas. Tente de novo em {minutos} minuto(s)."
 
         calculado, _ = _hash(senha or "", salt, it)
+        if (senha or "") == SENHA_PADRAO_ANTIGA and hmac.compare_digest(calculado, stored):
+            _log(cur, username, "SENHA_PADRAO_RECUSADA")
+            conn.commit()
+            return False, None, ("Esta senha padrão foi desativada por segurança. O responsável pelo sistema deve "
+                                 "configurar ADMIN_PASSWORD nos Secrets do Streamlit e reiniciar o app.")
         if not hmac.compare_digest(calculado, stored):
             falhas = (falhas or 0) + 1
             bloqueio = None

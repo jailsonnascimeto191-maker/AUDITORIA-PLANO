@@ -20,7 +20,9 @@ import pandas as pd
 import banco
 import motor_extracao as me
 
-DB = "valores_clinica.db"  # mesmo banco das tabelas de valores (no PostgreSQL, tudo fica junto)
+DB = "valores_clinica.db"
+# mude sempre que init_historico() passar a criar uma coluna/índice novo: o app roda a migração de novo
+VERSAO_ESQUEMA = "2026-10-28 duplicado_de"  # mesmo banco das tabelas de valores (no PostgreSQL, tudo fica junto)
 
 # coluna do DataFrame do motor_extracao -> coluna no banco
 COLUNAS = {
@@ -97,6 +99,10 @@ def init_historico():
                 conn.execute(f"ALTER TABLE demonstrativo_itens ADD COLUMN {c} {'REAL' if c in NUMERICAS else 'TEXT'}")
         if "vinculo_item" not in existentes:
             conn.execute("ALTER TABLE demonstrativo_itens ADD COLUMN vinculo_item INTEGER")
+        if "duplicado_de" not in existentes:
+            # atendimento que já estava no histórico por outro arquivo: fica guardado, mas não conta, e assume
+            # o lugar do outro se aquele arquivo for removido
+            conn.execute("ALTER TABLE demonstrativo_itens ADD COLUMN duplicado_de INTEGER")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_demo ON demonstrativo_itens (demonstrativo_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_chave ON demonstrativo_itens (chave)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_itens_data ON demonstrativo_itens (data_evento_iso)")
@@ -112,55 +118,70 @@ def _iso(data_br):
     return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else None
 
 
-def chave_atendimento(reg):
-    """Identifica um pagamento de um atendimento (para não gravar o mesmo duas vezes)."""
-    partes = [str(reg.get(c) or "").strip().upper() for c in
-              ("Doc Original", "Código", "Data do evento", "Nome do paciente", "Data de pagamento")]
-    if not partes[0] or partes[0] == "-" or not partes[1] or partes[1] == "-":
-        return None
-    return hashlib.sha1("|".join(partes).encode()).hexdigest()[:20]
+def chave_atendimento(reg, ocorrencia=0):
+    """Identifica um pagamento de um atendimento, para não contar o mesmo duas vezes quando ele aparece em
+    mais de um arquivo. Sem número de guia, usa paciente, procedimento, datas, valor pago e protocolo.
+    'ocorrencia' separa linhas iguais dentro do mesmo arquivo (ex.: duas sessões no mesmo dia, sem guia)."""
+    txt = lambda c: str(reg.get(c) or "").strip().upper()
+    guia, codigo = txt("Doc Original"), txt("Código")
+    if guia and guia != "-" and codigo and codigo != "-":
+        partes = [guia, codigo, txt("Data do evento"), txt("Nome do paciente"), txt("Data de pagamento")]
+    else:
+        paciente, data = txt("Nome do paciente"), txt("Data do evento")
+        if not paciente or paciente in ("-", "NÃO IDENTIFICADO") or not data or data == "-":
+            return None
+        try:
+            pago = f"{float(reg.get('Valor pago')):.2f}"
+        except (TypeError, ValueError):
+            pago = ""
+        partes = ["SEM GUIA", codigo, data, paciente, txt("Data de pagamento"), pago, txt("Protocolo"),
+                  txt("Procedimento")]
+    base = "|".join(partes) + (f"#{ocorrencia}" if ocorrencia else "")
+    return hashlib.sha1(base.encode()).hexdigest()[:20]
 
 
 def salvar_demonstrativo(df, arquivo, hash_, usuario, operadora):
-    """Guarda o demonstrativo (todas as linhas). Retorna (id, substituiu_anterior, ignorados), onde
-    'ignorados' é o número de atendimentos que já estavam no histórico por outro arquivo."""
+    """Guarda o demonstrativo (todas as linhas) e refaz as ligações da operadora.
+    Depois de salvar, chame vincular_historico(operadora) para refazer as ligações.
+    Retorna (id, substituiu_anterior, repetidos). 'repetidos' são atendimentos que já estavam no histórico por
+    outro arquivo: ficam guardados sem contar de novo. Se TODOS já estavam, nada é gravado e o id é None."""
     if df is None or df.empty:
         return None, False, 0
     with _conectar() as conn:
         antigos = [r[0] for r in conn.execute("SELECT id FROM demonstrativos WHERE hash = ?", (hash_,)).fetchall()]
-        religar = set()
+        ops = {r[0] for r in conn.execute(
+            f"SELECT operadora FROM demonstrativos WHERE id IN ({', '.join(['?'] * len(antigos))})",
+            antigos).fetchall()} if antigos else set()
         for i in antigos:
-            op_antiga = _desvincular(conn, i)
-            if op_antiga:
-                religar.add(op_antiga)
-            conn.execute("DELETE FROM demonstrativo_itens WHERE demonstrativo_id = ?", (i,))
-            conn.execute("DELETE FROM demonstrativos WHERE id = ?", (i,))
-        for op_antiga in religar:
-            _vincular(conn, op_antiga)
+            _remover(conn, i)
         registros = [dict(zip(df.columns, r)) for r in df.itertuples(index=False)]
-        chaves = [chave_atendimento(r) for r in registros]
-        existentes = set()
+        chaves = _chaves(df)
+        existentes = {}
         lista = [c for c in set(chaves) if c]
         for i in range(0, len(lista), 500):
             parte = lista[i:i + 500]
-            existentes.update(r[0] for r in conn.execute(
-                f"SELECT chave FROM demonstrativo_itens WHERE chave IN ({', '.join(['?'] * len(parte))})",
-                parte).fetchall())
-        novos = [(r, c) for r, c in zip(registros, chaves) if not c or c not in existentes]
-        ignorados = len(registros) - len(novos)
-        num = lambda col: round(float(pd.to_numeric(pd.Series([r.get(col) for r, _ in novos]), errors="coerce").sum()), 2)
+            for chave, iid in conn.execute(
+                    f"SELECT chave, id FROM demonstrativo_itens WHERE duplicado_de IS NULL AND "
+                    f"chave IN ({', '.join(['?'] * len(parte))})", parte).fetchall():
+                existentes.setdefault(chave, iid)
+        repetidos = sum(1 for c in chaves if c and c in existentes)
+        # a operadora deste arquivo é religada por vincular_historico(), chamado logo depois de salvar
+        if repetidos == len(registros):  # o arquivo inteiro já está no histórico (ex.: cópia salva de novo)
+            for op in ops - {operadora}:
+                _religar(conn, op)
+            conn.commit()
+            return None, bool(antigos), repetidos
         did = banco.inserir(
             conn,
             "INSERT INTO demonstrativos (data_hora, usuario, arquivo, hash, operadora, linhas, "
-            "valor_informado, valor_pago, valor_glosa) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (banco.agora_txt(), usuario, arquivo, hash_, operadora, len(novos),
-             num("Valor informado"), num("Valor pago"), num("Valor da glosa")),
+            "valor_informado, valor_pago, valor_glosa) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0)",
+            (banco.agora_txt(), usuario, arquivo, hash_, operadora),
         )
         nomes = list(COLUNAS.values())
-        sql = (f"INSERT INTO demonstrativo_itens (demonstrativo_id, operadora, data_evento_iso, chave, "
-               f"{', '.join(nomes)}) VALUES ({', '.join(['?'] * (len(nomes) + 4))})")
+        sql = (f"INSERT INTO demonstrativo_itens (demonstrativo_id, operadora, data_evento_iso, chave, duplicado_de, "
+               f"{', '.join(nomes)}) VALUES ({', '.join(['?'] * (len(nomes) + 5))})")
         linhas = []
-        for reg, chave in novos:
+        for reg, chave in zip(registros, chaves):
             valores = []
             for col_df, col_db in COLUNAS.items():
                 v = reg.get(col_df)
@@ -173,10 +194,37 @@ def salvar_demonstrativo(df, arquivo, hash_, usuario, operadora):
                 else:
                     v = "" if v is None or (not isinstance(v, str) and pd.isna(v)) else str(v)
                 valores.append(v)
-            linhas.append((did, operadora, _iso(reg.get("Data do evento")), chave, *valores))
+            linhas.append((did, operadora, _iso(reg.get("Data do evento")), chave,
+                           existentes.get(chave) if chave else None, *valores))
         conn.executemany(sql, linhas)
+        for op in ops - {operadora}:
+            _religar(conn, op)
+        _atualizar_totais(conn, [did])
         conn.commit()
-    return did, bool(antigos), ignorados
+    return did, bool(antigos), repetidos
+
+
+def _chaves(df):
+    vistas, chaves = {}, []
+    for r in (dict(zip(df.columns, x)) for x in df.itertuples(index=False)):
+        base = chave_atendimento(r)
+        n = vistas.get(base, 0) if base else 0
+        if base:
+            vistas[base] = n + 1
+        chaves.append(chave_atendimento(r, n) if base else None)
+    return chaves
+
+
+def arquivos_com_os_mesmos_atendimentos(df):
+    """Nomes dos arquivos do histórico que já têm os atendimentos deste DataFrame."""
+    lista = [c for c in set(_chaves(df)) if c][:500]
+    if not lista:
+        return []
+    with _conectar() as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT d.arquivo FROM demonstrativo_itens i JOIN demonstrativos d ON d.id = i.demonstrativo_id "
+            f"WHERE i.duplicado_de IS NULL AND i.chave IN ({', '.join(['?'] * len(lista))})", lista).fetchall()
+    return [r[0] for r in rows]
 
 
 def listar_demonstrativos():
@@ -191,12 +239,31 @@ def listar_demonstrativos():
 
 def excluir_demonstrativo(did):
     with _conectar() as conn:
-        operadora = _desvincular(conn, int(did))
-        conn.execute("DELETE FROM demonstrativo_itens WHERE demonstrativo_id = ?", (int(did),))
-        conn.execute("DELETE FROM demonstrativos WHERE id = ?", (int(did),))
-        if operadora:
-            _vincular(conn, operadora)  # refaz os vínculos entre os arquivos que ficaram
+        r = conn.execute("SELECT operadora FROM demonstrativos WHERE id = ?", (int(did),)).fetchone()
+        _remover(conn, int(did))
+        if r and r[0]:
+            _religar(conn, r[0])  # refaz as ligações entre os arquivos que ficaram
         conn.commit()
+
+
+def _remover(conn, did):
+    """Apaga um demonstrativo. Atendimentos de outros arquivos que estavam guardados como repetidos deste
+    passam a contar no lugar dele (nada some do histórico)."""
+    copias = {}
+    for cid, original in conn.execute(
+            "SELECT c.id, c.duplicado_de FROM demonstrativo_itens c JOIN demonstrativo_itens o ON o.id = c.duplicado_de "
+            "WHERE o.demonstrativo_id = ? AND c.demonstrativo_id <> ? ORDER BY c.id", (did, did)).fetchall():
+        copias.setdefault(original, []).append(cid)
+    promover, repontar = [], []
+    for ids in copias.values():
+        promover.append((ids[0],))
+        repontar += [(ids[0], outro) for outro in ids[1:]]
+    if promover:
+        conn.executemany("UPDATE demonstrativo_itens SET duplicado_de = NULL WHERE id = ?", promover)
+    if repontar:
+        conn.executemany("UPDATE demonstrativo_itens SET duplicado_de = ? WHERE id = ?", repontar)
+    conn.execute("DELETE FROM demonstrativo_itens WHERE demonstrativo_id = ?", (did,))
+    conn.execute("DELETE FROM demonstrativos WHERE id = ?", (did,))
 
 
 def operadoras():
@@ -217,7 +284,8 @@ def carregar_itens(desde_iso=None, operadoras_sel=None, somente_glosas=False):
         params += list(operadoras_sel)
     if somente_glosas:
         filtros.append("i.valor_glosa > 0.005")
-    where = ("WHERE " + " AND ".join(filtros)) if filtros else ""
+    filtros.append("i.duplicado_de IS NULL")
+    where = "WHERE " + " AND ".join(filtros)
     sel = ", ".join(f'i.{db} AS "{df}"' for df, db in COLUNAS.items())
     with _conectar() as conn:
         df = banco.ler_df(
@@ -297,7 +365,8 @@ def _itens_operadora(conn, operadora):
         conn,
         f'SELECT i.id AS "_id", i.demonstrativo_id AS "_demo", i.vinculo_item AS "_vinc", i.orig_json AS "_orig", '
         f'{sel}, i.operadora AS "Operadora", d.arquivo AS "Arquivo" '
-        f"FROM demonstrativo_itens i JOIN demonstrativos d ON d.id = i.demonstrativo_id WHERE i.operadora = ?",
+        f"FROM demonstrativo_itens i JOIN demonstrativos d ON d.id = i.demonstrativo_id "
+        f"WHERE i.operadora = ? AND i.duplicado_de IS NULL",
         (operadora,),
     )
     for c in ("Valor informado", "Valor pago", "Valor da glosa", "Diferença sem justificativa", "Complemento recebido",
@@ -313,7 +382,7 @@ def _itens_operadora(conn, operadora):
 def _atualizar_totais(conn, demos):
     for did in {int(d) for d in demos if d is not None}:
         r = conn.execute("SELECT COUNT(*), SUM(valor_informado), SUM(valor_pago), SUM(valor_glosa) "
-                         "FROM demonstrativo_itens WHERE demonstrativo_id = ?", (did,)).fetchone()
+                         "FROM demonstrativo_itens WHERE demonstrativo_id = ? AND duplicado_de IS NULL", (did,)).fetchone()
         conn.execute("UPDATE demonstrativos SET linhas=?, valor_informado=?, valor_pago=?, valor_glosa=? WHERE id=?",
                      (r[0], round(r[1] or 0, 2), round(r[2] or 0, 2), round(r[3] or 0, 2), did))
 
@@ -325,16 +394,50 @@ def _gravar_campos(conn, df, item_id, extra_sql="", extra_params=()):
 
 
 def vincular_historico(operadora, demonstrativo_id=None):
-    """Liga, entre arquivos diferentes da mesma operadora, as aparições da mesma guia (recurso, restante,
-    pagamento repetido, glosa mantida) e os complementos pagos em outra guia. Com demonstrativo_id, só os
-    vínculos que envolvem esse arquivo; sem ele, todo o histórico da operadora.
+    """Refaz, a partir dos valores originais de cada arquivo, todas as ligações entre arquivos da operadora
+    (mesma guia, reapresentações, pagamentos em duas partes). O resultado não depende da ordem em que os
+    arquivos foram enviados. demonstrativo_id é aceito por compatibilidade e não muda o resultado.
     Retorna (vínculos criados, casos para conferir)."""
     if not operadora:
         return 0, 0
     with _conectar() as conn:
-        n = _vincular(conn, operadora, demonstrativo_id)
+        n = _religar(conn, operadora)
         conn.commit()
     return n
+
+
+def _restaurar(conn, operadora):
+    """Volta todos os itens da operadora aos valores com que cada arquivo foi lido (desfaz as ligações)."""
+    afetados = set()
+    for iid, did, orig_json in conn.execute(
+            "SELECT id, demonstrativo_id, orig_json FROM demonstrativo_itens WHERE operadora = ? AND "
+            "orig_json IS NOT NULL", (operadora,)).fetchall():
+        try:
+            orig = json.loads(orig_json or "{}")
+        except ValueError:
+            orig = {}
+        campos = [c for c in CAMPOS_VINCULO if c in orig]
+        if campos:
+            sets = ", ".join(f"{COLUNAS[c]} = ?" for c in campos)
+            conn.execute(f"UPDATE demonstrativo_itens SET {sets}, vinculo_item = NULL, orig_json = NULL WHERE id = ?",
+                         tuple(orig[c] for c in campos) + (iid,))
+        else:
+            conn.execute("UPDATE demonstrativo_itens SET vinculo_item = NULL, orig_json = NULL WHERE id = ?", (iid,))
+        afetados.add(did)
+    return afetados
+
+
+def _religar(conn, operadora):
+    afetados = _restaurar(conn, operadora)
+    n = _vincular(conn, operadora)
+    demos = [r[0] for r in conn.execute("SELECT id FROM demonstrativos WHERE operadora = ?", (operadora,)).fetchall()]
+    _atualizar_totais(conn, set(demos) | afetados)
+    return n
+
+
+def _guardar_original(df, item):
+    """JSON dos campos de ligação como estão agora (antes de mudar). Gravado com COALESCE: vale o primeiro."""
+    return json.dumps({c: _py(df.at[item, c]) for c in CAMPOS_VINCULO}, ensure_ascii=False)
 
 
 def _vincular(conn, operadora, demonstrativo_id=None):
@@ -345,37 +448,38 @@ def _vincular(conn, operadora, demonstrativo_id=None):
         _ligar_reapresentacoes(conn, df, operadora, None, lambda k: "", set(), so_aprender=True)
         return 0, 0
     exigir = {int(demonstrativo_id)} if demonstrativo_id is not None else None
-    if True:
-        afetados = set()
-        origem = lambda k: f"arquivo {df.at[k, 'Arquivo']}"
-        # 1) a mesma guia em outro arquivo (recurso, restante, pagamento repetido, glosa mantida)
-        mesma, conferir = me.encontrar_mesma_guia(df, df["_demo"], exigir_em=exigir)
-        for a, seguintes, tipo, ref in mesma:
-            orig = me.aplicar_vinculo_guia(df, a, seguintes, tipo, origem, ref)
-            for item in [a] + list(seguintes):
-                parceiro = seguintes[-1] if item == a else a
-                original = {c: _py(v) for c, v in orig[item].items()}
-                _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = ?",
-                               (int(parceiro), json.dumps(original, ensure_ascii=False)))
-                afetados.add(df.at[item, "_demo"])
-        # 2) lotes de reapresentação (recurso/complemento) com outro número de guia: padrão aprendido
-        n_reap, conferir_reap = _ligar_reapresentacoes(conn, df, operadora, exigir, origem, afetados)
-        # 3) complemento pago em outra guia (pagamento em duas partes)
-        pares, ambiguos = me.encontrar_pares(df, grupo=df["_demo"], exigir_em=exigir)
-        ambiguos = set(ambiguos) | set(conferir)
-        for a, b in pares:
-            orig = me.aplicar_vinculo(df, a, b, origem_a=f"arquivo {df.at[a, 'Arquivo']}",
-                                      origem_b=f"arquivo {df.at[b, 'Arquivo']}")
-            for item, parceiro in ((a, b), (b, a)):
-                original = {c: _py(v) for c, v in orig[item].items()}
-                _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = ?",
-                               (int(parceiro), json.dumps(original, ensure_ascii=False)))
-                afetados.add(df.at[item, "_demo"])
-        for k in ambiguos:
-            if me.ALERTA_POSSIVEL_PARTES not in str(df.at[k, "Alertas"] or ""):
-                novo = "; ".join([x for x in [str(df.at[k, "Alertas"] or "")] if x] + [me.ALERTA_POSSIVEL_PARTES])
-                conn.execute("UPDATE demonstrativo_itens SET alertas = ? WHERE id = ?", (novo, int(k)))
-        _atualizar_totais(conn, afetados)
+    afetados = set()
+    origem = lambda k: f"arquivo {df.at[k, 'Arquivo']}"
+    # 1) a mesma guia em outro arquivo (recurso, restante, pagamento repetido, glosa mantida)
+    mesma, conferir = me.encontrar_mesma_guia(df, df["_demo"], exigir_em=exigir)
+    for a, seguintes, tipo, ref in mesma:
+        orig = me.aplicar_vinculo_guia(df, a, seguintes, tipo, origem, ref)
+        for item in [a] + list(seguintes):
+            parceiro = seguintes[-1] if item == a else a
+            original = {c: _py(v) for c, v in orig[item].items()}
+            _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = COALESCE(orig_json, ?)",
+                           (int(parceiro), json.dumps(original, ensure_ascii=False)))
+            afetados.add(df.at[item, "_demo"])
+    # 2) lotes de reapresentação (recurso/complemento) com outro número de guia: padrão aprendido
+    n_reap, conferir_reap = _ligar_reapresentacoes(conn, df, operadora, exigir, origem, afetados)
+    # 3) complemento pago em outra guia (pagamento em duas partes)
+    pares, ambiguos = me.encontrar_pares(df, grupo=df["_demo"], exigir_em=exigir)
+    ambiguos = set(ambiguos) | set(conferir)
+    for a, b in pares:
+        orig = me.aplicar_vinculo(df, a, b, origem_a=f"arquivo {df.at[a, 'Arquivo']}",
+                                  origem_b=f"arquivo {df.at[b, 'Arquivo']}")
+        for item, parceiro in ((a, b), (b, a)):
+            original = {c: _py(v) for c, v in orig[item].items()}
+            _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = COALESCE(orig_json, ?)",
+                           (int(parceiro), json.dumps(original, ensure_ascii=False)))
+            afetados.add(df.at[item, "_demo"])
+    for k in ambiguos:
+        if me.ALERTA_POSSIVEL_PARTES not in str(df.at[k, "Alertas"] or ""):
+            original = _guardar_original(df, k)
+            novo = "; ".join([x for x in [str(df.at[k, "Alertas"] or "")] if x] + [me.ALERTA_POSSIVEL_PARTES])
+            conn.execute("UPDATE demonstrativo_itens SET alertas = ?, orig_json = COALESCE(orig_json, ?) "
+                         "WHERE id = ?", (novo, original, int(k)))
+    _atualizar_totais(conn, afetados)
     return len(pares) + len(mesma) + n_reap, len(ambiguos) + conferir_reap
 
 
@@ -402,66 +506,18 @@ def _ligar_reapresentacoes(conn, df, operadora, exigir, origem, afetados, so_apr
         orig = mp.aplicar_reapresentacao(df, a, k, origem, familia_k=", ".join(fam[k]))
         for item, parceiro in ((a, k), (k, a)):
             original = {c: _py(v) for c, v in orig[item].items()}
-            _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = ?",
+            _gravar_campos(conn, df, item, ", vinculo_item = ?, orig_json = COALESCE(orig_json, ?)",
                            (int(parceiro), json.dumps(original, ensure_ascii=False)))
             afetados.add(df.at[item, "_demo"])
     # avisos só nas linhas do arquivo novo (as antigas já receberam o aviso quando foram lidas)
     novos = {k for k in (sem | varios) if exigir is None or df.at[k, "_demo"] in exigir}
-    antes = {k: str(df.at[k, "Alertas"] or "") for k in novos}
+    antes = {k: (str(df.at[k, "Alertas"] or ""), _guardar_original(df, k)) for k in novos}
     mp.marcar_avisos(df, sem & novos, varios & novos)
     for k in novos:
-        if str(df.at[k, "Alertas"] or "") != antes[k]:
-            conn.execute("UPDATE demonstrativo_itens SET alertas = ? WHERE id = ?", (df.at[k, "Alertas"], int(k)))
+        if str(df.at[k, "Alertas"] or "") != antes[k][0]:
+            conn.execute("UPDATE demonstrativo_itens SET alertas = ?, orig_json = COALESCE(orig_json, ?) WHERE id = ?",
+                         (df.at[k, "Alertas"], antes[k][1], int(k)))
     return len(ligacoes), len(varios & novos)
-
-
-def _desvincular(conn, demonstrativo_id):
-    """Antes de remover um demonstrativo: restaura (pelos valores originais guardados) todos os itens de outros
-    arquivos que estavam ligados a ele, direta ou indiretamente, e limpa os avisos de conferência. Depois que o
-    arquivo sai, _religar() refaz os vínculos entre os arquivos que ficaram."""
-    did = int(demonstrativo_id)
-    op = conn.execute("SELECT operadora FROM demonstrativos WHERE id = ?", (did,)).fetchone()
-    if not op:
-        return 0
-    rows = conn.execute("SELECT id, demonstrativo_id, vinculo_item, orig_json FROM demonstrativo_itens "
-                        "WHERE operadora = ? AND vinculo_item IS NOT NULL", (op[0],)).fetchall()
-    info = {int(r[0]): (int(r[1]), r[2], r[3]) for r in rows}
-    # grupos ligados (vínculo em qualquer direção)
-    viz = {}
-    for iid, (_, parc, _) in info.items():
-        if parc is not None:
-            viz.setdefault(iid, set()).add(int(parc))
-            viz.setdefault(int(parc), set()).add(iid)
-    inicio = [i for i, (d, _, _) in info.items() if d == did]
-    marcados, pilha = set(), list(inicio)
-    while pilha:
-        k = pilha.pop()
-        if k in marcados:
-            continue
-        marcados.add(k)
-        pilha.extend(viz.get(k, ()))
-    afetados = set()
-    for iid in marcados:
-        if iid not in info or info[iid][0] == did:
-            continue
-        try:
-            orig = json.loads(info[iid][2] or "{}")
-        except ValueError:
-            orig = {}
-        if orig:
-            sets = ", ".join(f"{COLUNAS[c]} = ?" for c in CAMPOS_VINCULO if c in orig)
-            conn.execute(f"UPDATE demonstrativo_itens SET {sets}, vinculo_item = NULL, orig_json = NULL WHERE id = ?",
-                         tuple(orig[c] for c in CAMPOS_VINCULO if c in orig) + (iid,))
-        else:
-            conn.execute("UPDATE demonstrativo_itens SET vinculo_item = NULL, orig_json = NULL WHERE id = ?", (iid,))
-        afetados.add(info[iid][0])
-    for iid, alertas in conn.execute(
-            "SELECT id, alertas FROM demonstrativo_itens WHERE operadora = ? AND alertas LIKE ?",
-            (op[0], f"%{me.ALERTA_POSSIVEL_PARTES}%")).fetchall():
-        novo = "; ".join(x for x in str(alertas).split("; ") if x and x != me.ALERTA_POSSIVEL_PARTES)
-        conn.execute("UPDATE demonstrativo_itens SET alertas = ? WHERE id = ?", (novo, int(iid)))
-    _atualizar_totais(conn, afetados)
-    return op[0]
 
 
 def pagamentos_em_partes(operadoras_sel=None):

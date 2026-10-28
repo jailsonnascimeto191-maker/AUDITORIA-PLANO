@@ -122,9 +122,36 @@ def aprender(df):
     return len(refs), len(codigos)
 
 
+def validar_perfil(mapa):
+    """Confere um padrão de leitura antes de salvar. Retorna (ok, mensagem)."""
+    mapa = {k: v for k, v in (mapa or {}).items() if v}
+    faltam = []
+    if "Valor pago" not in mapa:
+        faltam.append("Valor pago")
+    if "Nome do paciente" not in mapa and "Doc Original" not in mapa:
+        faltam.append("Nome do paciente ou Doc Original (número da guia)")
+    if "Data do evento" not in mapa and "Doc Original" not in mapa:
+        faltam.append("Data do evento ou Doc Original (número da guia)")
+    if faltam:
+        return False, "Padrão não salvo: escolha a coluna de " + "; ".join(faltam) + "."
+    usadas = {}
+    for campo, coluna in mapa.items():
+        usadas.setdefault(coluna, []).append(campo)
+    repetidas = {c: f for c, f in usadas.items() if len(f) > 1}
+    if repetidas:
+        c, f = next(iter(repetidas.items()))
+        return False, (f"Padrão não salvo: a coluna '{c}' foi escolhida para mais de um campo ({', '.join(f)}). "
+                       "Cada coluna do arquivo vale para um campo só.")
+    return True, ""
+
+
 def salvar_perfil(assinatura, mapa, colunas, operadora, usuario):
+    """Salva o padrão de leitura de um layout. Retorna (ok, mensagem)."""
     if not assinatura:
-        return False
+        return False, "Layout sem identificação: não dá para salvar."
+    ok, msg = validar_perfil(mapa)
+    if not ok:
+        return False, msg
     with _conectar() as conn:
         conn.execute(
             "INSERT INTO perfis_leitura (assinatura, operadora, mapeamento, colunas, atualizado_em, usuario) "
@@ -135,7 +162,7 @@ def salvar_perfil(assinatura, mapa, colunas, operadora, usuario):
              json.dumps(list(colunas), ensure_ascii=False), banco.agora_txt(), usuario),
         )
         conn.commit()
-    return True
+    return True, "Padrão salvo."
 
 
 def excluir_perfil(assinatura):

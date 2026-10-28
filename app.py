@@ -708,7 +708,8 @@ def _inicializar_bancos(chave_banco, versao_esquema=""):
 
 
 # muda sempre que uma atualização acrescenta colunas: força criar as que faltam no banco
-_VERSAO_ESQUEMA = "|".join(list(motor_historico.COLUNAS.values()) + motor_extracao.COLUNAS_COMPLETAS)
+_VERSAO_ESQUEMA = "|".join([getattr(motor_historico, "VERSAO_ESQUEMA", "")] + list(motor_historico.COLUNAS.values())
+                           + motor_extracao.COLUNAS_COMPLETAS)
 _erro_init = _inicializar_bancos(banco.chave_configuracao(), _VERSAO_ESQUEMA)
 if _erro_init:
     _inicializar_bancos.clear()  # tenta de novo na próxima interação
@@ -1430,6 +1431,12 @@ if not st.session_state.autenticado:
             unsafe_allow_html=True,
         )
         mostrar_flash()
+        if not motor_seguranca.existe_administrador():
+            st.warning("**Falta configurar o administrador.** Por segurança, o sistema não tem senha padrão. "
+                       "Nos Secrets do Streamlit (Gerenciar aplicativo → Settings → Secrets), acrescente a linha "
+                       "`ADMIN_PASSWORD = \"uma senha forte\"` e reinicie o app. Depois entre com o usuário **admin** "
+                       "e essa senha; o sistema vai pedir para trocá-la.")
+            st.stop()
         with st.form("form_login"):
             usuario = st.text_input("Usuário")
             senha = st.text_input("Senha", type="password")
@@ -1729,11 +1736,17 @@ elif menu == "Casa das Máquinas":
         try:
             did, substituiu, ignorados = motor_historico.salvar_demonstrativo(
                 df_res, nome_arq, motor_historico.hash_arquivo(dados), str(st.session_state.usuario_atual), operadora)
-            aviso = " A versão anterior deste arquivo foi substituída no histórico." if substituiu else " Guardado no histórico."
-            if ignorados:
-                aviso += (f" {ignorados} atendimento(s) já estavam no histórico por outro arquivo e não foram "
-                          "contados de novo.")
-            ligados, possiveis = motor_historico.vincular_historico(operadora, did)
+            if did is None and ignorados:
+                origem = motor_historico.arquivos_com_os_mesmos_atendimentos(df_res)
+                aviso = (" Nada foi gravado: todos os atendimentos deste arquivo já estão no histórico"
+                         + (f" (arquivo {', '.join(origem[:3])})" if origem else "") + ".")
+            else:
+                aviso = (" A versão anterior deste arquivo foi substituída no histórico." if substituiu
+                         else " Guardado no histórico.")
+                if ignorados:
+                    aviso += (f" {ignorados} atendimento(s) já estavam no histórico por outro arquivo: ficaram "
+                              "guardados sem contar de novo (passam a contar se aquele arquivo for removido).")
+            ligados, possiveis = motor_historico.vincular_historico(operadora)
             if ligados:
                 aviso += (f" {ligados} atendimento(s) foram ligados a pagamentos de outros arquivos do histórico "
                           "(complementos, recursos e pagamentos repetidos; veja no Painel → Pagamentos em partes).")
@@ -1811,17 +1824,24 @@ elif menu == "Casa das Máquinas":
                 opcoes = [""] + list(lt.get("colunas", []))
                 tab = motor_conhecimento.mapa_para_tabela(lt)
                 ed = st.data_editor(
-                    tab, key=f"mapa_{assin}", hide_index=True, disabled=["Campo do sistema"],
+                    tab, key=f"mapa_{assin}", hide_index=True,
+                    disabled=["Campo do sistema"] + ([] if eh_admin else ["Coluna do arquivo"]),
                     column_config={"Coluna do arquivo": st.column_config.SelectboxColumn(
                         "Coluna do arquivo", options=opcoes, help="Deixe vazio se o arquivo não tem esse dado.")},
                     **FULL_ED,
                 )
-                if st.button("Salvar este padrão e reprocessar", key=f"salvar_mapa_{assin}",
-                             help="O sistema passa a ler todo arquivo com este mesmo layout desta forma."):
+                if not eh_admin:
+                    st.caption("O padrão de leitura vale para todos os arquivos com este layout: só o administrador "
+                               "pode alterá-lo.")
+                elif st.button("Salvar este padrão e reprocessar", key=f"salvar_mapa_{assin}",
+                               help="O sistema passa a ler todo arquivo com este mesmo layout desta forma."):
                     novo = {r["Campo do sistema"]: r["Coluna do arquivo"] for _, r in ed.iterrows()
                             if r["Coluna do arquivo"]}
-                    motor_conhecimento.salvar_perfil(assin, novo, lt.get("colunas", []), leitura.get("operadora"),
-                                                     str(st.session_state.usuario_atual))
+                    ok_p, msg_p = motor_conhecimento.salvar_perfil(
+                        assin, novo, lt.get("colunas", []), leitura.get("operadora"), str(st.session_state.usuario_atual))
+                    if not ok_p:
+                        st.error(msg_p)
+                        st.stop()
                     registrar_log("Padrão de leitura salvo", f"{leitura.get('operadora')} | {len(novo)} campos")
                     dados_arq = st.session_state.get("ultimo_arquivo_dados")
                     if dados_arq:

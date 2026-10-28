@@ -28,6 +28,7 @@ import csv
 import hashlib
 import io
 import itertools
+import datetime
 import re
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -301,6 +302,14 @@ _RE_DATA_BR = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$")
 _RE_DATA_ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 
 
+def _data_valida(dia, mes, ano):
+    """'dd/mm/aaaa' se a data existe no calendário (31/02 não existe); senão '-'."""
+    try:
+        return datetime.date(int(ano), int(mes), int(dia)).strftime("%d/%m/%Y")
+    except (ValueError, TypeError):
+        return "-"
+
+
 def padronizar_data(val):
     if hasattr(val, "strftime") and not isinstance(val, str):
         try:
@@ -311,11 +320,11 @@ def padronizar_data(val):
     if not s:
         return "-"
     m = _RE_DATA_ISO.match(s)
-    if m and 1 <= int(m.group(2)) <= 12 and 1 <= int(m.group(3)) <= 31:
-        return f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
+    if m:
+        return _data_valida(m.group(3), m.group(2), m.group(1))
     m = _RE_DATA_BR.match(s)
-    if m and 1 <= int(m.group(2)) <= 12 and 1 <= int(m.group(1)) <= 31:
-        return f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{m.group(3)}"
+    if m:
+        return _data_valida(m.group(1), m.group(2), m.group(3))
     try:
         if re.match(r"^\d{4}-\d{2}-\d{2}", s):
             dt = pd.to_datetime(s[:10], errors="coerce")
@@ -760,10 +769,32 @@ def _montar_saida(df, mapa, pag_global="", lote_global="", pag_por_linha=None):
         prox_tem_cod = tem_cod.shift(-1, fill_value=False)
         out["_linha_guia"] = (~tem_cod) & prox_tem_cod
 
-    # Preenchimento para baixo (dados hierárquicos)
+    # Data escrita no arquivo, mas que não existe (31/02, "ontem"): avisa em vez de inventar
+    avisos = pd.Series("", index=out.index)
+    s = col("Data do evento")
+    if s is not None:
+        bruto = s.apply(_txt)
+        invalida = bruto.ne("") & out["Data do evento"].eq("-")
+        avisos[invalida] = "Data do atendimento inválida no arquivo: " + bruto[invalida]
+
+    # Preenchimento para baixo, só onde o arquivo é organizado assim:
+    # - com linha da guia: dentro da MESMA guia (nunca passa para a guia seguinte);
+    # - sem linha da guia: só em coluna que vem preenchida uma vez por grupo (relatório agrupado).
+    #   Numa tabela comum, uma célula vazia fica vazia (com aviso), em vez de herdar a linha de cima.
+    bloco = out["_linha_guia"].cumsum()
+    hierarquico = bool(out["_linha_guia"].any())
     for c in ["Data do evento", "Protocolo", "Doc Original", "Nome do paciente", "Lote", "Data de pagamento"]:
-        out[c] = out[c].replace(["", "-", "Não identificado"], pd.NA).ffill()
-        out[c] = out[c].fillna("Não identificado" if c == "Nome do paciente" else "-")
+        v = out[c].replace(["", "-", "Não identificado"], pd.NA)
+        if hierarquico:
+            v = v.groupby(bloco).ffill()
+        elif v.notna().any() and v.isna().mean() >= 0.3:
+            v = v.ffill()
+        out[c] = v.fillna("Não identificado" if c == "Nome do paciente" else "-")
+    sem_data = out["Data do evento"].eq("-") & avisos.eq("") & ("Data do evento" in mapa)
+    avisos[sem_data & ~out["_linha_guia"]] = "Sem data do atendimento no arquivo"
+    sem_pac = out["Nome do paciente"].eq("Não identificado") & ("Nome do paciente" in mapa) & ~out["_linha_guia"]
+    avisos[sem_pac] = (avisos[sem_pac] + "; ").str.lstrip("; ") + "Sem nome do paciente no arquivo"
+    out["_aviso_leitura"] = avisos
 
     # justificativa escrita na linha da guia vale para os procedimentos DESSA guia (nunca passa para a próxima)
     if out["_linha_guia"].any():
@@ -799,6 +830,26 @@ def _limpar_linhas(out):
     return out[~(vazio | total)].reset_index(drop=True)
 
 
+_CABECALHOS_NAO_PACIENTE = {"PLANO", "OPERADORA", "CONVENIO", "EMPRESA", "PRESTADOR", "ESPECIALIDADE",
+                            "PROFISSIONAL", "MEDICO", "UNIDADE"}
+_SINAIS_TABELA_DE_VALORES = ("VIGENCIA", "REDE NACIONAL", "REDE FLEX", "VALOR TABELA", "TABELA DE VALORES",
+                             "VALOR DE TABELA")
+
+
+def _motivo_recusa(colunas, mapa):
+    """Por que esta tabela não é um demonstrativo de pagamento (ou None se ela parece ser)."""
+    cab = " | ".join(_norm(c) for c in colunas)
+    if any(x in cab for x in _SINAIS_TABELA_DE_VALORES) and "Doc Original" not in mapa \
+            and "Data de pagamento" not in mapa:
+        return ("parece uma tabela de valores de procedimentos (tem vigência ou rede), não um demonstrativo. "
+                "Para cadastrar valores, use Valores → Valores recebidos por plano → Importar planilha.")
+    if "Nome do paciente" not in mapa and "Doc Original" not in mapa:
+        return "não encontrei a coluna do paciente nem a do número da guia."
+    if "Data do evento" not in mapa and "Doc Original" not in mapa:
+        return "não encontrei a data do atendimento nem o número da guia."
+    return None
+
+
 def _processar_bruto(raw, perfis=None, nome_tabela=""):
     """Lê uma tabela bruta (aba, tabela de PDF...). Retorna (linhas, mapa, info)."""
     vazio = pd.DataFrame()
@@ -830,8 +881,16 @@ def _processar_bruto(raw, perfis=None, nome_tabela=""):
                 or _norm(mapa["Valor informado"]) in ("VALOR", "VALOR R", "VLR", "VL", "VALOR RS")):
             mapa["Valor pago"] = mapa.pop("Valor informado")
             info["observacoes"].append("A única coluna de valor do arquivo foi lida como VALOR PAGO.")
+    # coluna de plano/operadora não é paciente
+    if "Nome do paciente" in mapa and _norm(mapa["Nome do paciente"]) in _CABECALHOS_NAO_PACIENTE:
+        mapa.pop("Nome do paciente")
     info["mapa"] = dict(mapa)
     if len(mapa) < 2 or not (set(mapa) & set(CAMPOS_DINHEIRO)):
+        return vazio, mapa, info
+    recusa = _motivo_recusa(colunas, mapa)
+    if recusa:
+        info["recusa"] = recusa
+        info["observacoes"].append(f"Tabela ignorada: {recusa}")
         return vazio, mapa, info
 
     out = _montar_saida(tabela, mapa, pag_global, lote_global, pag_por_linha)
@@ -1139,6 +1198,7 @@ def _consolidar(d):
         "Data de pagamento": _ultima_data,
         "_status_glosa": lambda s: True if any(v is True for v in s) else (False if any(v is False for v in s) else None),
         "_informado_no_arquivo": "max", "_glosa_no_arquivo": "max", "_tabela": "first",
+        "_aviso_leitura": _juntar_texto,
     }
     agg = {k: v for k, v in agg.items() if k in d.columns}
     g = d.groupby("_grupo", sort=False).agg(**{k: (k, v) for k, v in agg.items()})
@@ -1289,6 +1349,8 @@ def _analisar(d, operadora, conhecimento, sem_aprender=None):
                      "procedimento para calcular a diferença")
         if fonte[i] == FONTE_NENHUMA and not a:
             a.append("Sem valor de referência")
+        if "_aviso_leitura" in d.columns and str(d["_aviso_leitura"].iat[i] or "").strip():
+            a.insert(0, str(d["_aviso_leitura"].iat[i]))
         if d["_creditos"].iat[i] > 1 and pd.notna(informado.iat[i]) and informado.iat[i] > 0 \
                 and p > informado.iat[i] * 1.5 and g <= TOL:
             s = STATUS_DUPLICIDADE
@@ -1458,6 +1520,8 @@ def _recurso_mesma_guia(out):
         out.at[i, "Vínculo"] = (f"Glosado em {p1['data']}{prot1}{motivo_txt}: {_br_valor(glosado)}. "
                                 f"Recurso no protocolo {prot_rec or '-'}: {volta}")
         out.at[i, "Alertas"] = "; ".join(_sem_avisos_de_credito(out.at[i, "Alertas"]))
+        if recebido > glosado + TOL:  # devolveu mais do que tinha sido glosado
+            _marcar_excesso(out, i, recebido - glosado)
         n += 1
     return out, n
 
@@ -1470,6 +1534,8 @@ def encontrar_mesma_guia(df, grupo, exigir_em=None):
       'partes'       pago em parte e o restante depois
       'duplicidade'  pago por inteiro mais de uma vez
       'glosa'        nada foi pago (glosa mantida)
+      'parcial'      glosado e só parte do valor voltou depois (recurso pago em parte)
+      'excesso'      glosado e, somando o que veio depois, pago acima do valor (possível duplicidade)
     Outros casos ficam para conferir.
     Retorna (lista de (principal, [seguintes], tipo, valor de referência), índices para conferir)."""
     if df is None or df.empty:
@@ -1514,6 +1580,10 @@ def encontrar_mesma_guia(df, grupo, exigir_em=None):
             tipo = "recurso" if pago[a] <= TOL else "partes"
         elif total >= 2 * ref - TOL and pago[a] >= ref - TOL:
             tipo = "duplicidade"
+        elif pago[a] < ref - TOL and total < ref - TOL and float(pago[seguintes].sum()) > TOL:
+            tipo = "parcial"
+        elif pago[a] < ref - TOL and total > ref + TOL:
+            tipo = "excesso"
         else:
             conferir.update(idx)
             continue
@@ -1548,10 +1618,21 @@ def aplicar_vinculo_guia(df, a, seguintes, tipo, origem=None, ref=None):
         if str(df.at[k, "Motivo da glosa"] or "").startswith(_MOTIVOS_GERADOS):
             df.at[k, "Motivo da glosa"] = ""
     lista = "; ".join(f"{_br_valor(pk)} em {df.at[k, 'Data de pagamento']}{onde(k)}" for k, pk in pagos_depois)
-    if tipo in ("recurso", "partes"):
+    if tipo == "parcial":
+        falta = round(_num(df.at[a, "Valor informado"]) - pa - sum(pk for _, pk in pagos_depois), 2)
+        if _num(df.at[a, "Valor da glosa"]) > TOL:
+            df.at[a, "Valor da glosa"], df.at[a, "Diferença sem justificativa"] = falta, 0.0
+        else:
+            df.at[a, "Valor da glosa"], df.at[a, "Diferença sem justificativa"] = 0.0, falta
+        df.at[a, "Complemento recebido"] = round(sum(pk for _, pk in pagos_depois), 2)
+        df.at[a, "Alertas"] = "; ".join(alertas_a)
+        for k, pk in pagos_depois:
+            df.at[k, "Status da glosa"] = STATUS_COMPLEMENTO if pk > TOL else STATUS_GLOSA_MANTIDA
+            df.at[k, "Vínculo"] = f"Mesma guia do crédito de {dt_a}{onde(a)}"
+    elif tipo in ("recurso", "partes", "excesso"):
         df.at[a, "Valor da glosa"] = 0.0
         df.at[a, "Diferença sem justificativa"] = 0.0
-        df.at[a, "Status da glosa"] = "Sem glosa" if tipo == "recurso" else STATUS_PAGO_EM_PARTES
+        df.at[a, "Status da glosa"] = "Sem glosa" if tipo != "partes" else STATUS_PAGO_EM_PARTES
         if str(df.at[a, "Motivo da glosa"] or "").startswith(_MOTIVOS_GERADOS):
             df.at[a, "Motivo da glosa"] = ""
         nota = ("Glosa revertida: pago depois" if tipo == "recurso" else "Restante pago depois na mesma guia")
@@ -1579,7 +1660,7 @@ def aplicar_vinculo_guia(df, a, seguintes, tipo, origem=None, ref=None):
     justificada = bool(motivo_a.strip()) and not motivo_a.startswith(_MOTIVOS_GERADOS)
     ref_v = _num(df.at[a, "Valor informado"])
     glosado = round(ref_v - pa, 2)
-    if tipo in ("recurso", "glosa") or (tipo == "partes" and justificada):
+    if tipo in ("recurso", "glosa", "parcial", "excesso") or (tipo == "partes" and justificada):
         if glosado > TOL:
             recebido = round(sum(pk for _, pk in pagos_depois), 2)
             sit = situacao_recurso(glosado, recebido)
@@ -1603,7 +1684,19 @@ def aplicar_vinculo_guia(df, a, seguintes, tipo, origem=None, ref=None):
             df.at[a, "Vínculo"] = (f"Glosado em {dt_a}" + (f" no protocolo {prot_a}" if prot_a not in ("", "-") else "")
                                    + (f" ({motivo_a})" if justificada else "") + f": {_br_valor(glosado)}. "
                                    f"Recurso no protocolo {prot or '-'}{onde(pagos_depois[-1][0])}: {volta}")
+            if tipo == "excesso":
+                _marcar_excesso(df, a, recebido - glosado)
     return orig
+
+
+ALERTA_RECURSO_EXCESSO = "Recebeu mais que o valor glosado somando o recurso: possível pagamento em duplicidade"
+
+
+def _marcar_excesso(df, i, a_mais):
+    """O recurso devolveu mais do que tinha sido glosado: o plano pagou acima do valor (provável duplicidade)."""
+    df.at[i, "Status da glosa"] = STATUS_DUPLICIDADE
+    atual = [x for x in str(df.at[i, "Alertas"] or "").split("; ") if x and not x.startswith(ALERTA_RECURSO_EXCESSO)]
+    df.at[i, "Alertas"] = "; ".join(atual + [f"{ALERTA_RECURSO_EXCESSO} ({_br_valor(a_mais)} a mais)"])
 
 
 def _garantir_colunas_recurso(df):
@@ -2006,6 +2099,9 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
         mapa = next((m for d, m, _ in resultados if not d.empty), {})
         leituras = [i for d, _, i in resultados if i.get("colunas") or not d.empty]
         if not partes:
+            recusas = list(dict.fromkeys(i["recusa"] for _, _, i in resultados if i.get("recusa")))
+            if recusas:
+                return vazio, "Este arquivo não parece um demonstrativo de pagamento: " + " ".join(recusas)
             return vazio, "Nenhuma glosa ou estrutura de valores encontrada."
 
         operadora = _detectar_operadora(plano, nome_original)
