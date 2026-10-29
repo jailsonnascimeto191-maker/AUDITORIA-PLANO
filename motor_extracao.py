@@ -988,9 +988,14 @@ def valor_vigente(linhas, data):
 
 
 def valores_vigentes(linhas, data):
-    """Devolve (valor Rede Nacional, valor Rede Flex ou None) válidos na data, ou None."""
-    vals = {(round(l[2], 2), round(l[3], 2) if len(l) > 3 and l[3] else None)
-            for l in linhas if vigente(l[0], l[1], data)}
+    """Devolve (valor Rede Nacional, valor Rede Flex ou None) válidos na data, ou None.
+    Se mais de uma vigência vale na data (ex.: uma termina e a outra começa no mesmo dia), vale a que começou
+    por último. Só fica sem valor (ambíguo) se as que começaram juntas tiverem valores diferentes."""
+    validas = [l for l in linhas if vigente(l[0], l[1], data)]
+    if validas:
+        ultimo = max(data_iso(l[0]) for l in validas)  # '' (desde sempre) é o mais antigo
+        validas = [l for l in validas if data_iso(l[0]) == ultimo]
+    vals = {(round(l[2], 2), round(l[3], 2) if len(l) > 3 and l[3] else None) for l in validas}
     if len({v[0] for v in vals}) != 1:
         return None
     flex = {v[1] for v in vals if v[1]}
@@ -1328,7 +1333,7 @@ def _analisar(d, operadora, conhecimento, sem_aprender=None):
         if g > TOL:
             s = "Glosa total" if p <= TOL else "Glosa parcial"
         elif (tem_just.iat[i] or qtd_cortada.iat[i]) and pd.isna(informado.iat[i]):
-            s = "Glosa (valor não identificado)"
+            s = STATUS_GLOSA_SEM_VALOR
             a.append("Sem valor de referência para calcular a glosa: cadastre o valor deste procedimento")
         elif dif.iat[i] > TOL:
             s = "Pago a menor sem justificativa"
@@ -1462,6 +1467,7 @@ def encontrar_pares(df, grupo=None, exigir_em=None):
 
 
 STATUS_GLOSA_MANTIDA = "Glosa mantida em novo crédito"
+STATUS_GLOSA_SEM_VALOR = "Glosa (valor não identificado)"
 STATUS_RECURSO_PAGO = "Glosa revertida em recurso"
 STATUS_RECURSO_PARCIAL = "Recurso pago em parte"
 
@@ -2008,6 +2014,24 @@ def _detectar_operadora(plano, nome_arquivo):
 # --------------------------------------------------------------------------
 # Função principal chamada pelo app
 # --------------------------------------------------------------------------
+# Limites de processamento: um arquivo muito maior que um demonstrativo real (ou montado para travar o sistema,
+# como um .xlsx que descompacta em gigabytes) é recusado antes de ser lido.
+LIMITE_XLSX_DESCOMPACTADO = 300 * 1024 * 1024   # bytes do conteúdo descompactado do .xlsx
+LIMITE_ABAS = 120
+LIMITE_LINHAS = 400_000                         # somando todas as abas/tabelas
+LIMITE_PAGINAS_PDF = 400
+
+
+def _tamanho_descompactado(dados):
+    """Soma do tamanho descompactado das partes de um .xlsx (que é um zip). None se não for zip."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(dados)) as z:
+            return sum(i.file_size for i in z.infolist())
+    except zipfile.BadZipFile:
+        return None
+
+
 def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_glosas=True,
                               data_pagamento_padrao=None, conhecimento=None):
     """Retorna (DataFrame, mensagem_de_erro_ou_None). Uma linha por atendimento/procedimento.
@@ -2028,11 +2052,19 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
         resultados = []  # (linhas, mapa, info)
 
         if nome.endswith((".xlsx", ".xlsm", ".xls")):
+            tam = _tamanho_descompactado(dados) if nome.endswith((".xlsx", ".xlsm")) else None
+            if tam is not None and tam > LIMITE_XLSX_DESCOMPACTADO:
+                return vazio, (f"Arquivo grande demais para um demonstrativo ({tam / 1024 / 1024:.0f} MB de conteúdo). "
+                               "Divida em arquivos menores (por mês, por exemplo).")
             try:
                 abas = pd.read_excel(io.BytesIO(dados), sheet_name=None, header=None, dtype=object)
             except ImportError as e:
                 return vazio, f"Biblioteca ausente para ler Excel ('openpyxl' para .xlsx, 'xlrd' para .xls): {e}"
-            for nome_aba, aba in abas.items():  # TODAS as abas, sem limite
+            if len(abas) > LIMITE_ABAS or sum(len(a) for a in abas.values()) > LIMITE_LINHAS:
+                return vazio, (f"Arquivo grande demais para um demonstrativo ({len(abas)} abas, "
+                               f"{sum(len(a) for a in abas.values()):,} linhas). Divida em arquivos menores."
+                               .replace(",", "."))
+            for nome_aba, aba in abas.items():
                 resultados.append(_processar_bruto(aba, perfis, str(nome_aba)))
 
         elif nome.endswith((".csv", ".txt", ".tsv")):
@@ -2049,6 +2081,8 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
             linhas = [l for l in csv.reader(io.StringIO(texto), delimiter=sep) if any(c.strip() for c in l)]
             if not linhas:
                 return vazio, "O arquivo não tem linhas com conteúdo."
+            if len(linhas) > LIMITE_LINHAS:
+                return vazio, "Arquivo grande demais para um demonstrativo. Divida em arquivos menores."
             largura = max(len(l) for l in linhas)
             bruto = pd.DataFrame([l + [None] * (largura - len(l)) for l in linhas], dtype=object)
             resultados.append(_processar_bruto(bruto, perfis, "arquivo"))
@@ -2064,6 +2098,11 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
             if fitz is None:
                 return vazio, "PyMuPDF não instalado. Rode: pip install pymupdf"
             doc = fitz.open(stream=dados, filetype="pdf")
+            paginas = doc.page_count
+            if paginas > LIMITE_PAGINAS_PDF:
+                doc.close()
+                return vazio, (f"PDF grande demais para um demonstrativo ({paginas} páginas; limite "
+                               f"{LIMITE_PAGINAS_PDF}). Divida em arquivos menores.")
             try:
                 for n_pag, pagina in enumerate(doc, start=1):
                     if hasattr(pagina, "find_tables"):

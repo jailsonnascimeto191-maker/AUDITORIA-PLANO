@@ -177,9 +177,19 @@ def autenticar_usuario(username, senha):
         ).fetchone()
 
         if not row:
-            _hash(senha or "x")  # tempo de resposta parecido com usuário existente
+            # mesma resposta e mesmo tempo de um usuário que existe, inclusive o bloqueio após várias tentativas:
+            # assim não dá para descobrir quais nomes de usuário existem
+            _hash(senha or "x")
+            desde = (agora - timedelta(minutes=BLOQUEIO_MINUTOS)).strftime("%Y-%m-%d %H:%M:%S")
+            tentativas = cur.execute(
+                "SELECT COUNT(*) FROM logs_acesso WHERE username=? AND acao='FALHA_USUARIO' AND data_hora>=?",
+                (username[:60], desde)).fetchone()[0]
             _log(cur, username, "FALHA_USUARIO")
             conn.commit()
+            if tentativas + 1 >= MAX_TENTATIVAS:
+                return False, None, (f"Muitas tentativas. Acesso bloqueado por {BLOQUEIO_MINUTOS} minutos."
+                                     if tentativas + 1 == MAX_TENTATIVAS else
+                                     f"Muitas tentativas. Tente de novo em {BLOQUEIO_MINUTOS} minuto(s).")
             return False, None, MSG_INVALIDO
 
         uid, stored, salt, role, ativo, falhas, bloqueado_ate, it = row
@@ -309,6 +319,15 @@ def atualizar_usuario(username, role, ativo, por_admin):
         _log(cur, por_admin, f"ALTEROU_USUARIO:{username}:{role}:{'ativo' if ativo else 'inativo'}")
         conn.commit()
     return True, "Usuário atualizado."
+
+
+def situacao_usuario(username):
+    """(ativo, perfil) do usuário agora, ou None se ele não existe mais."""
+    if not username:
+        return None
+    with _conn() as conn:
+        row = conn.execute("SELECT ativo, role FROM usuarios WHERE username=?", (_normalizar(username),)).fetchone()
+    return (bool(row[0]), row[1]) if row else None
 
 
 def obter_relatorio_acessos():

@@ -181,6 +181,29 @@ def listar_perfis():
     return df
 
 
+def reaprender_referencias(operadora, itens):
+    """Refaz os valores de referência aprendidos de uma operadora a partir do histórico que ficou (ex.: depois de
+    remover um demonstrativo que tinha valores errados). Só usa atendimentos comuns: complementos, recursos e
+    reapresentações não mostram o valor típico de um procedimento. Retorna quantos valores ficaram."""
+    op = me._norm(operadora or "")
+    if not op:
+        return 0
+    base = itens if itens is not None else pd.DataFrame()
+    if not base.empty and "Status da glosa" in base.columns:
+        fora = {me.STATUS_COMPLEMENTO, me.STATUS_GLOSA_MANTIDA, me.STATUS_PAGO_EM_PARTES, me.STATUS_DUPLICIDADE,
+                me.STATUS_RECURSO_PAGO, me.STATUS_RECURSO_PARCIAL}
+        base = base[~base["Status da glosa"].isin(fora) & base["Vínculo"].fillna("").eq("")]
+    refs = me.aprender_referencias(base, operadora) if not base.empty else {}
+    agora = banco.agora_txt()
+    with _conectar() as conn:
+        conn.execute("DELETE FROM referencias_valor WHERE operadora = ?", (op,))
+        conn.executemany(
+            "INSERT INTO referencias_valor (operadora, codigo, mes, valor, atualizado_em) VALUES (?, ?, ?, ?, ?)",
+            [(o, cod, mes, float(v), agora) for (o, cod, mes), v in refs.items()])
+        conn.commit()
+    return len(refs)
+
+
 def resumo_aprendizado():
     with _conectar() as conn:
         n = lambda t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]

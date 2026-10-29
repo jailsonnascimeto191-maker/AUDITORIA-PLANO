@@ -283,7 +283,8 @@ def carregar_itens(desde_iso=None, operadoras_sel=None, somente_glosas=False):
         filtros.append(f"i.operadora IN ({', '.join(['?'] * len(operadoras_sel))})")
         params += list(operadoras_sel)
     if somente_glosas:
-        filtros.append("i.valor_glosa > 0.005")
+        filtros.append("(i.valor_glosa > 0.005 OR i.status = ?)")
+        params.append(me.STATUS_GLOSA_SEM_VALOR)
     filtros.append("i.duplicado_de IS NULL")
     where = "WHERE " + " AND ".join(filtros)
     sel = ", ".join(f'i.{db} AS "{df}"' for df, db in COLUNAS.items())
@@ -312,6 +313,7 @@ def carregar_itens(desde_iso=None, operadoras_sel=None, somente_glosas=False):
 def resumo_painel(itens):
     """Agregações para o Painel. 'itens' vem de carregar_itens()."""
     vazio = dict(apresentado=0.0, glosado=0.0, itens_glosados=0, pct=0.0, diferencas=0.0, itens_diferenca=0,
+                 itens_sem_valor=0,
                  por_mes=pd.DataFrame(columns=["Mês", "Valor glosado"]),
                  por_operadora=pd.DataFrame(columns=["Operadora", "Valor glosado"]),
                  motivos=pd.DataFrame(columns=["Motivo da glosa", "Itens", "Valor glosado", "% do glosado"]))
@@ -323,7 +325,8 @@ def resumo_painel(itens):
     dif = pd.to_numeric(itens.get("Diferença sem justificativa", pd.Series(dtype=float)), errors="coerce").fillna(0)
     res = dict(apresentado=apresentado, glosado=glosado, itens_glosados=int(len(g)),
                pct=(glosado / apresentado) if apresentado else 0.0,
-               diferencas=float(dif.sum()), itens_diferenca=int((dif > 0.005).sum()))
+               diferencas=float(dif.sum()), itens_diferenca=int((dif > 0.005).sum()),
+               itens_sem_valor=int((itens["Status da glosa"] == me.STATUS_GLOSA_SEM_VALOR).sum()))
     if g.empty:
         return {**vazio, **res}
     g["Mês"] = g["_iso"].fillna("").str[:7].replace("", "Sem data")

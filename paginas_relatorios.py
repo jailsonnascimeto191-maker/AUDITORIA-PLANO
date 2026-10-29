@@ -316,7 +316,7 @@ def render_glosas(H):
     if ops and sel_ops:
         vis = vis[vis["Operadora"].astype(str).isin(sel_ops)]
     if busca.strip():
-        m = vis.astype(str).apply(lambda c: c.str.contains(busca.strip(), case=False, na=False)).any(axis=1)
+        m = vis.astype(str).apply(lambda c: c.str.contains(busca.strip(), case=False, na=False, regex=False)).any(axis=1)
         vis = vis[m]
     vis = vis.reset_index(drop=True)
     if vis.empty:

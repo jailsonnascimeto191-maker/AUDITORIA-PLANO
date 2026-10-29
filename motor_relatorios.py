@@ -170,6 +170,32 @@ def _configurar_impressao(ws, linha_cab=None):
     ws.oddFooter.center.text = f"{_rodape_texto()}  |  Página &P de &N"
 
 
+_INICIO_FORMULA = ("=", "+", "@", "\t", "\r")
+
+
+def sem_formula(v):
+    """Texto vindo do arquivo do convênio que começa como fórmula (=, +, -, @) é gravado como texto, com um
+    apóstrofo na frente. Sem isso, o Excel executaria a fórmula ao abrir o relatório (ex.: =HYPERLINK)."""
+    if not isinstance(v, str) or not v:
+        return v
+    if v.startswith(_INICIO_FORMULA) or (v.startswith("-") and len(v) > 1 and not _parece_numero(v)):
+        return "'" + v
+    return v
+
+
+def _parece_numero(v):
+    return bool(re.fullmatch(r"-?[\d.,\s]+%?", v.strip()))
+
+
+def sem_formulas_df(df):
+    """Cópia do DataFrame com as colunas de texto protegidas (para CSV e Excel)."""
+    df = df.copy()
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].map(sem_formula)
+    return df
+
+
 def _escrever_tabela(ws, df, linha_ini, d, formatar_status=True, totais=True):
     """Escreve df a partir de linha_ini (cabeçalho). Retorna a última linha usada."""
     cols = list(df.columns)
@@ -185,7 +211,7 @@ def _escrever_tabela(ws, df, linha_ini, d, formatar_status=True, totais=True):
         fim = r
         cor_status = None
         for j, (nome, v) in enumerate(zip(cols, linha), start=1):
-            v = _py(v)
+            v = sem_formula(_py(v))
             if nome in datas and isinstance(v, str):
                 dt = pd.to_datetime(v, format="%d/%m/%Y", errors="coerce")
                 v = dt.to_pydatetime() if pd.notna(dt) else (v if v != "-" else None)

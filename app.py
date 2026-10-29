@@ -27,6 +27,7 @@ import motor_conhecimento  # noqa: E402
 import motor_historico  # noqa: E402
 import motor_padroes  # noqa: E402
 import motor_verificacao  # noqa: E402
+import motor_relatorios  # noqa: E402
 import manual  # noqa: E402
 import paginas_relatorios  # noqa: E402
 
@@ -391,6 +392,8 @@ def previa_reajuste(tipo, plano, esp, data_inicio, percentual):
 
 
 def aplicar_reajuste(tipo, plano, previa, data_inicio, percentual):
+    if not REAJUSTE_MIN <= float(percentual) <= REAJUSTE_MAX:
+        raise ValueError(f"Reajuste fora do limite ({REAJUSTE_MIN:.0f}% a {REAJUSTE_MAX:.0f}%).")
     cfg = TIPOS[tipo]
     ini = _iso_ou_none(data_inicio)
     fim_antigo = (pd.Timestamp(ini) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
@@ -432,9 +435,80 @@ def _esp_do_procedimento(esp, procedimento):
     return (motor_extracao.especialidade_do_procedimento(procedimento) or "OUTROS").upper()
 
 
+REAJUSTE_MIN, REAJUSTE_MAX = -50.0, 100.0
+
+
+def _data_planilha(v):
+    """(iso ou None, texto inválido ou ''). Vazio = sem data; data que não existe (31/02) = inválida."""
+    if v is None or (not isinstance(v, str) and pd.isna(v)) or str(v).strip() in ("", "-", "NaT", "nan", "None"):
+        return None, ""
+    br = motor_extracao.padronizar_data(v)
+    if br == "-":
+        return None, str(v).strip()
+    return motor_extracao.data_iso(br), ""
+
+
+def _chave_procedimento(codigo, procedimento):
+    cod = "" if codigo is None or (not isinstance(codigo, str) and pd.isna(codigo)) else str(codigo).strip()
+    return ("C", cod) if cod else ("N", motor_extracao._norm(motor_extracao._txt(procedimento)))
+
+
+def _sobrepoe(a_ini, a_fim, b_ini, b_fim):
+    return (a_ini or "") <= (b_fim or "9999-12-31") and (b_ini or "") <= (a_fim or "9999-12-31")
+
+
+def conferir_valores_plano(plano, linhas, substituir_codigos):
+    """Confere linhas de valores antes de gravar. Retorna (linhas válidas, linhas já cadastradas, problemas).
+    Recusa: valor zero/negativo, Flex negativo, data que não existe, fim antes do início e vigência que se
+    sobrepõe a outra do mesmo procedimento (na planilha ou no cadastro) com valor diferente."""
+    validas, repetidas, problemas = [], 0, []
+    existentes = valores_plano_df(plano)
+    codigos_subst = {str(l.get("codigo") or "").strip() for l in linhas} if substituir_codigos else set()
+    ja = []
+    for _, r in existentes.iterrows():
+        cod = motor_extracao._txt(r["codigo_tuss"])
+        if cod and cod in codigos_subst:
+            continue
+        ja.append((_chave_procedimento(cod, r["procedimento"]), _iso_ou_none(r["vigencia_inicio"]),
+                   _iso_ou_none(r["vigencia_fim"]), round(float(r["valor_plano"]), 2)))
+    for n, l in enumerate(linhas, start=1):
+        nome = str(l.get("codigo") or l.get("procedimento") or f"linha {n}").strip()
+        nac, flex = _num_ou_none(l.get("nacional")), _num_ou_none(l.get("flex"))
+        ini, ini_ruim = _data_planilha(l.get("inicio"))
+        fim, fim_ruim = _data_planilha(l.get("fim"))
+        if nac is None or nac <= 0:
+            problemas.append(f"{nome}: valor da Rede Nacional precisa ser maior que zero.")
+            continue
+        if flex is not None and flex < 0:
+            problemas.append(f"{nome}: valor da Rede Flex não pode ser negativo.")
+            continue
+        if ini_ruim or fim_ruim:
+            problemas.append(f"{nome}: data de vigência que não existe ({ini_ruim or fim_ruim}).")
+            continue
+        if ini and fim and fim < ini:
+            problemas.append(f"{nome}: fim da vigência antes do início.")
+            continue
+        chave = _chave_procedimento(l.get("codigo"), l.get("procedimento"))
+        igual = [x for x in ja if x[0] == chave and x[1] == ini and x[2] == fim and x[3] == round(nac, 2)]
+        if igual:
+            repetidas += 1
+            continue
+        conflito = [x for x in ja if x[0] == chave and _sobrepoe(ini, fim, x[1], x[2])]
+        if conflito:
+            x = conflito[0]
+            problemas.append(f"{nome}: a vigência ({_br(ini) or 'desde sempre'} a {_br(fim) or 'sem fim'}) se sobrepõe "
+                             f"a outro valor já cadastrado ou na mesma planilha (R$ {x[3]:.2f}, "
+                             f"{_br(x[1]) or 'desde sempre'} a {_br(x[2]) or 'sem fim'}). Encerre um deles antes.")
+            continue
+        validas.append({**l, "nacional": nac, "flex": flex if flex else None, "inicio": ini, "fim": fim})
+        ja.append((chave, ini, fim, round(nac, 2)))
+    return validas, repetidas, problemas
+
+
 def gravar_valores_plano(plano, linhas, substituir_codigos):
-    """Grava valores recebidos por plano. linhas: dicts com codigo, procedimento, nacional, flex, inicio, fim,
-    especialidade. substituir_codigos=True apaga antes os valores desses códigos no plano."""
+    """Grava valores recebidos por plano (já conferidos por conferir_valores_plano). linhas: dicts com codigo,
+    procedimento, nacional, flex, inicio, fim, especialidade. substituir_codigos=True apaga antes os valores
+    desses códigos no plano."""
     tb = TIPOS["faturamento"]["tabela"]
     linhas = [l for l in linhas if _num_ou_none(l.get("nacional")) is not None]
     codigos = sorted({str(l["codigo"]).strip() for l in linhas if str(l.get("codigo") or "").strip()})
@@ -454,13 +528,15 @@ def gravar_valores_plano(plano, linhas, substituir_codigos):
 
 
 def importar_sugestao(plano, sugestao, substituir):
-    """Grava na tabela de valores recebidos os valores sugeridos pelos demonstrativos."""
+    """Grava na tabela de valores recebidos os valores sugeridos pelos demonstrativos.
+    Retorna (gravados, já cadastrados, problemas)."""
     linhas = [dict(codigo=r["Código"], procedimento=r["Procedimento"], nacional=r["Valor Rede Nacional"],
                    flex=r["Valor Rede Flex"], inicio=r["Início"], fim=r["Fim"], especialidade=r["Especialidade"])
               for _, r in sugestao.iterrows()]
-    n, ncod = gravar_valores_plano(plano, linhas, substituir)
+    validas, repetidas, problemas = conferir_valores_plano(plano, linhas, substituir)
+    n, ncod = gravar_valores_plano(plano, validas, substituir) if validas else (0, 0)
     registrar_log("Valores importados do histórico", f"{plano} | {n} valor(es) | {ncod} código(s)")
-    return n
+    return n, repetidas, problemas
 
 
 def valores_plano_df(plano):
@@ -487,6 +563,17 @@ def salvar_valores_plano(plano, original, editado):
         (ed["vigencia_fim"].astype(str) < ed["vigencia_inicio"].astype(str))
     if trocadas.any():
         return False, f"{int(trocadas.sum())} linha(s) com o fim da vigência antes do início."
+    if (ed["valor_plano"] <= 0).any() or (ed["valor_flex"].fillna(0) < 0).any():
+        return False, "Os valores precisam ser maiores que zero."
+    vistos = []
+    for _, r in ed.iterrows():
+        chave = _chave_procedimento(r["codigo_tuss"], r["procedimento"])
+        for c2, ini2, fim2, v2 in vistos:
+            if c2 == chave and _sobrepoe(r["vigencia_inicio"], r["vigencia_fim"], ini2, fim2) \
+                    and round(float(r["valor_plano"]), 2) != v2:
+                return False, (f"{r['codigo_tuss'] or r['procedimento']}: duas vigências com valores diferentes se "
+                               "sobrepõem. Encerre a vigência antiga (fim) antes do início da nova.")
+        vistos.append((chave, r["vigencia_inicio"], r["vigencia_fim"], round(float(r["valor_plano"]), 2)))
     mantidos, novos = ed[ed["id"].notna()], ed[ed["id"].isna()]
     removidos = set(original["id"].astype(int)) - set(mantidos["id"].astype(int))
     nn = lambda v: None if pd.isna(v) else float(v)
@@ -891,9 +978,14 @@ def tabela(df, **kw):
 
 def baixar(df, nome, rotulo="Baixar CSV", key=None):
     st.download_button(
-        rotulo, df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
-        file_name=f"{nome}.csv", mime="text/csv", key=key, **FULL_DL,
+        rotulo, motor_relatorios.sem_formulas_df(df).to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+        file_name=f"{nome}.csv", mime="text/csv", key=key, on_click=_registrar_download, args=(nome, len(df)),
+        **FULL_DL,
     )
+
+
+def _registrar_download(nome, linhas):
+    registrar_log("Arquivo baixado", f"{nome}.csv | {linhas} linhas")
 
 
 def brl(v):
@@ -1086,12 +1178,19 @@ def secao_faturamento():
             elif ini_iso and fim_iso and fim_iso < ini_iso:
                 st.error("O fim da vigência não pode ser antes do início.")
             else:
-                gravar_valores_plano(plano_n, [dict(codigo=codigo, procedimento=nome, nacional=nac,
-                                                    flex=flex or None, inicio=inicio, fim=fim)], False)
-                registrar_log("Valor recebido cadastrado", f"{plano_n} | {codigo} {nome} | {brl(nac)} / {brl(flex)}")
-                avisar("success", f"Valor cadastrado em {plano_n}: {codigo or nome} · Nacional {brl(nac)}"
-                                  + (f" · Flex {brl(flex)}" if flex else ""))
-                st.rerun()
+                validas, repetidas, problemas = conferir_valores_plano(
+                    plano_n, [dict(codigo=codigo, procedimento=nome, nacional=nac, flex=flex or None,
+                                   inicio=inicio, fim=fim)], False)
+                if problemas:
+                    st.error(problemas[0])
+                elif repetidas:
+                    st.info("Esse valor já está cadastrado, com a mesma vigência. Nada foi alterado.")
+                else:
+                    gravar_valores_plano(plano_n, validas, False)
+                    registrar_log("Valor recebido cadastrado", f"{plano_n} | {codigo} {nome} | {brl(nac)} / {brl(flex)}")
+                    avisar("success", f"Valor cadastrado em {plano_n}: {codigo or nome} · Nacional {brl(nac)}"
+                                      + (f" · Flex {brl(flex)}" if flex else ""))
+                    st.rerun()
 
     # 3) Reajuste
     with sub[2]:
@@ -1104,7 +1203,9 @@ def secao_faturamento():
             plano_r = r1.selectbox("Plano", planos_tb, key="reaj_plano_fat")
             with r2:
                 data_r = _data_opcional("Novo valor a partir de", "reaj_data_fat")
-            pct = r3.number_input("Reajuste (%)", value=0.0, step=0.5, format="%.2f", key="reaj_pct_fat")
+            pct = r3.number_input("Reajuste (%)", value=0.0, step=0.5, format="%.2f", key="reaj_pct_fat",
+                                  min_value=REAJUSTE_MIN, max_value=REAJUSTE_MAX,
+                                  help="Use número negativo para redução. Limite: −50% a +100%.")
             if data_r and pct:
                 prev = previa_reajuste("faturamento", plano_r, "Todas", data_r, pct)
                 if prev.empty:
@@ -1145,14 +1246,25 @@ def secao_faturamento():
                 tabela(pd.DataFrame([{"Plano": p, "Valores": len(l), "Códigos": len({x["codigo"] for x in l})}
                                      for p, l in dados.items()]))
                 if st.button("Confirmar importação", type="primary", key="conf_fat"):
-                    total = 0
+                    total, ja_tinha, recusadas = 0, 0, []
                     for p, linhas in dados.items():
-                        n, _ = gravar_valores_plano(p, linhas, subst)
-                        total += n
+                        validas, repetidas, problemas = conferir_valores_plano(p, linhas, subst)
+                        ja_tinha += repetidas
+                        recusadas += [f"{p} · {x}" for x in problemas]
+                        if validas:
+                            n, _ = gravar_valores_plano(p, validas, subst)
+                            total += n
                         st.session_state[f"ver_fat_{p}"] = st.session_state.get(f"ver_fat_{p}", 0) + 1
-                    registrar_log("Importação de valores recebidos", f"{total} valor(es) | {', '.join(dados)}")
-                    avisar("success", f"Importação concluída: {total} valor(es). Reprocesse os demonstrativos "
-                                      "para recalcular as glosas.")
+                    registrar_log("Importação de valores recebidos",
+                                  f"{total} valor(es) | {len(recusadas)} recusado(s) | {', '.join(dados)}")
+                    msg = f"Importação concluída: {total} valor(es) gravado(s)."
+                    if ja_tinha:
+                        msg += f" {ja_tinha} já estavam cadastrados e não foram repetidos."
+                    if recusadas:
+                        msg += (f" {len(recusadas)} linha(s) NÃO foram gravadas: " + " | ".join(recusadas[:8])
+                                + (" | ..." if len(recusadas) > 8 else ""))
+                    avisar("warning" if recusadas else "success",
+                           msg + " Reprocesse os demonstrativos para recalcular as glosas.")
                     st.rerun()
 
     # 5) Sugestão a partir dos demonstrativos processados
@@ -1209,11 +1321,16 @@ def secao_faturamento():
                                  key="sug_subst")
         if st.button(f"Cadastrar {len(marcados)} valor(es) marcados", type="primary", key="sug_cadastrar",
                      disabled=marcados.empty):
-            n = importar_sugestao(plano_dest, marcados, substituir)
+            n, repetidas, problemas = importar_sugestao(plano_dest, marcados, substituir)
             st.session_state.pop(chave_sug, None)
             st.session_state[f"ver_fat_{plano_dest}"] = st.session_state.get(f"ver_fat_{plano_dest}", 0) + 1
-            avisar("success", f"{n} valor(es) cadastrados em {plano_dest}. Reprocesse os demonstrativos na Casa das "
-                              "Máquinas para recalcular as glosas.")
+            msg = f"{n} valor(es) cadastrados em {plano_dest}."
+            if repetidas:
+                msg += f" {repetidas} já estavam cadastrados."
+            if problemas:
+                msg += f" {len(problemas)} NÃO foram gravados: " + " | ".join(problemas[:6])
+            avisar("warning" if problemas else "success",
+                   msg + " Reprocesse os demonstrativos na Casa das Máquinas para recalcular as glosas.")
             st.rerun()
 
 
@@ -1318,7 +1435,9 @@ def secao_valores(tipo):
             esp_r = r2.selectbox("Especialidade", ["Todas"] + especs, format_func=str.title, key=f"reaj_esp_{tipo}")
             with r3:
                 data_r = _data_opcional("Novo valor a partir de", f"reaj_data_{tipo}")
-            pct = r4.number_input("Reajuste (%)", value=0.0, step=0.5, format="%.2f", key=f"reaj_pct_{tipo}")
+            pct = r4.number_input("Reajuste (%)", value=0.0, step=0.5, format="%.2f", key=f"reaj_pct_{tipo}",
+                                  min_value=REAJUSTE_MIN, max_value=REAJUSTE_MAX,
+                                  help="Use número negativo para redução. Limite: −50% a +100%.")
             if data_r and pct:
                 prev = previa_reajuste(tipo, plano_r, esp_r, data_r, pct)
                 if prev.empty:
@@ -1402,8 +1521,9 @@ INATIVIDADE_MIN = 30  # encerra a sessão após 30 minutos sem uso
 
 
 def sair(motivo=None):
-    for k in ("autenticado", "usuario_atual", "nivel_permissao", "ultimo_processamento", "trocar_senha"):
-        st.session_state.pop(k, None)
+    """Encerra a sessão apagando TUDO o que ela guardava (arquivos, relatórios, filtros): quem entrar depois no
+    mesmo navegador não vê nada do usuário anterior."""
+    st.session_state.clear()
     if motivo:
         st.session_state["flash"] = ("info", motivo)
     st.rerun()
@@ -1415,6 +1535,12 @@ if st.session_state.get("autenticado"):
     if agora - ultima > INATIVIDADE_MIN * 60:
         sair(f"Sua sessão foi encerrada após {INATIVIDADE_MIN} minutos sem uso. Entre novamente.")
     st.session_state["ultima_atividade"] = agora
+    # o usuário pode ter sido desativado ou mudado de perfil depois de entrar: confere no banco a cada uso
+    _situacao = motor_seguranca.situacao_usuario(st.session_state.get("usuario_atual"))
+    if not _situacao or not _situacao[0]:
+        sair("Seu acesso foi desativado. Fale com o administrador.")
+    elif _situacao[1] != st.session_state.get("nivel_permissao"):
+        st.session_state["nivel_permissao"] = _situacao[1]
 
 # ─────────────────────────────────────────────────────────────
 # Login
@@ -1623,10 +1749,19 @@ if menu == "Painel":
                        f"sem justificativa do plano, somando {brl(r['diferencas'])}. Pesquise na **Lupa de Glosas** "
                        "desmarcando \"Só itens com glosa\".")
 
-        if r["itens_glosados"] == 0:
-            vazio("Nenhuma glosa no período", "Nas operadoras e no período escolhidos, tudo foi pago como esperado.",
-                  "feliz", "moeda")
-        else:
+        if r.get("itens_sem_valor"):
+            st.warning(f"**{r['itens_sem_valor']} atendimento(s) com glosa sem valor calculado**: o plano informou "
+                       "motivo de glosa, mas falta o valor do procedimento para calcular quanto foi glosado. "
+                       "Cadastre o valor em **Valores** e envie o demonstrativo de novo. Para ver quais são, "
+                       "pesquise na **Lupa de Glosas**.")
+        if r["itens_glosados"] == 0 and not r.get("itens_sem_valor"):
+            if not len(itens):
+                vazio("Nenhum atendimento neste período", "Não há demonstrativos com atendimentos no período e "
+                      "nas operadoras escolhidos. Aumente o período ou escolha outras operadoras.", "atenta", "lupa")
+            else:
+                vazio("Nenhuma glosa no período", "Nas operadoras e no período escolhidos, tudo foi pago como "
+                      "esperado.", "feliz", "moeda")
+        if r["itens_glosados"]:
             g1, g2 = st.columns(2)
             with g1:
                 secao("Valor glosado por mês")
@@ -1696,7 +1831,19 @@ if menu == "Painel":
                 alvo = d1.selectbox("Remover do histórico", list(rot), format_func=rot.get, key="hist_alvo")
                 conf_del = d2.checkbox("Confirmo", key=f"hist_conf_{alvo}")
                 if d2.button("Remover", disabled=not conf_del, key=f"hist_del_{alvo}", **FULL_BTN):
+                    op_alvo = lista.loc[lista["id"] == alvo, "Operadora"].iloc[0]
+                    arq_alvo = lista.loc[lista["id"] == alvo, "Arquivo"].iloc[0]
                     motor_historico.excluir_demonstrativo(alvo)
+                    # o que foi aprendido com esse arquivo sai junto: reaprende com o histórico que ficou
+                    try:
+                        motor_conhecimento.reaprender_referencias(
+                            op_alvo, motor_historico.carregar_itens(operadoras_sel=[op_alvo]))
+                    except Exception:
+                        pass
+                    # o arquivo removido deixa de ser o "último processado" da Casa das Máquinas e da Lupa
+                    if st.session_state.get("ultimo_arquivo") == arq_alvo:
+                        for k in ("ultimo_processamento", "ultimo_arquivo", "ultimo_arquivo_dados", "ultima_leitura"):
+                            st.session_state.pop(k, None)
                     registrar_log("Demonstrativo removido do histórico", rot[alvo])
                     avisar("success", "Demonstrativo removido do histórico.")
                     st.rerun()
@@ -1746,14 +1893,20 @@ elif menu == "Casa das Máquinas":
                 if ignorados:
                     aviso += (f" {ignorados} atendimento(s) já estavam no histórico por outro arquivo: ficaram "
                               "guardados sem contar de novo (passam a contar se aquele arquivo for removido).")
-            ligados, possiveis = motor_historico.vincular_historico(operadora)
-            if ligados:
-                aviso += (f" {ligados} atendimento(s) foram ligados a pagamentos de outros arquivos do histórico "
-                          "(complementos, recursos e pagamentos repetidos; veja no Painel → Pagamentos em partes).")
-            if possiveis:
-                aviso += f" {possiveis} caso(s) ficaram para conferir."
         except Exception as e:
             aviso = f" Não foi possível guardar no histórico: {e}"
+        else:
+            # guardar e ligar são passos separados: se só a ligação falhar, o arquivo já está guardado
+            try:
+                ligados, possiveis = motor_historico.vincular_historico(operadora)
+                if ligados:
+                    aviso += (f" {ligados} atendimento(s) foram ligados a pagamentos de outros arquivos do histórico "
+                              "(complementos, recursos e pagamentos repetidos; veja no Painel → Pagamentos em partes).")
+                if possiveis:
+                    aviso += f" {possiveis} caso(s) ficaram para conferir."
+            except Exception as e:
+                aviso += (f" Atenção: o arquivo foi guardado, mas não foi possível ligá-lo aos outros arquivos do "
+                          f"histórico ({e}). Envie o arquivo de novo para tentar outra vez.")
         registrar_log("Demonstrativo reprocessado" if reprocessando else "Demonstrativo processado",
                       f"{nome_arq} | {operadora} | {len(df_res)} atendimentos")
         st.session_state["ultimo_processamento"] = df_res
@@ -1852,7 +2005,8 @@ elif menu == "Casa das Máquinas":
 
         st.markdown("&nbsp;", unsafe_allow_html=True)
         if exibir == "Itens com glosa":
-            vis = df_proc[df_proc["Valor da glosa"] > 0.005]
+            vis = df_proc[(df_proc["Valor da glosa"] > 0.005)
+                          | (df_proc["Status da glosa"] == motor_extracao.STATUS_GLOSA_SEM_VALOR)]
         elif exibir == "Diferenças a conferir":
             vis = df_proc[pd.to_numeric(df_proc.get("Diferença sem justificativa", 0), errors="coerce").fillna(0) > 0.005]
         else:
