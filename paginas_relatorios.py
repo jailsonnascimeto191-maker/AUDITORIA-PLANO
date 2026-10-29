@@ -131,6 +131,7 @@ def render_producao(H):
     H.cabecalho(
         "Produção do profissional",
         "Cruze o controle de atendimento com o demonstrativo do plano e gere o espelho da produção do mês.",
+        ajuda="Produção do Profissional",
     )
     profs = H.listar_profissionais()
     if not profs.empty:
@@ -255,6 +256,7 @@ def render_glosas(H):
     H.cabecalho(
         "Relatório de glosas",
         "Tudo o que foi glosado: data, paciente, guia do prestador, lote e motivo. Exporta para Excel e PDF.",
+        ajuda="Relatório de Glosas",
     )
     ultimo = st.session_state.get("ultimo_processamento", pd.DataFrame())
     HIST = "Histórico (todos os demonstrativos já processados)"
@@ -367,6 +369,7 @@ def render_faturamento(H):
     H.cabecalho(
         "Faturamento x recebimento",
         "Confira se tudo o que foi faturado nos lotes foi pago, em que mês e com quantos dias de demora.",
+        ajuda="Faturamento x Recebimento",
     )
     H.secao("1. Arquivos")
     u1, u2 = st.columns(2)

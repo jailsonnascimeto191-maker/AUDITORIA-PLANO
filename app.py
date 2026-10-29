@@ -924,6 +924,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .manual-item h3 { font-family: var(--titulo); font-weight: 700; font-size: 21px; letter-spacing: -.01em; margin: 0 0 6px; color: var(--ink); }
 .manual-item .onde { color: var(--faixa); font-weight: 600; font-size: 13.5px; margin-bottom: 8px; }
 .manual-item p, .manual-item li { font-size: 15px; line-height: 1.55; color: var(--ink); max-width: 70ch; }
+.ajuda-zu { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 8px; }
+.ajuda-balao { background: var(--musgo); color: #fff; font-weight: 700; border-radius: 14px 14px 14px 4px;
+  padding: 8px 14px; margin-bottom: 40px; font-size: 15px; }
+.ajuda-bloco { font-size: 14px; line-height: 1.5; max-width: 46ch; }
+.ajuda-bloco b { display: block; color: var(--musgo); margin-top: 10px; font-family: var(--titulo); }
+.ajuda-bloco p { margin: 2px 0 0; }
+.ajuda-bloco ul, .ajuda-bloco ol { margin: 2px 0 0 1.1rem; padding: 0; }
 .manual-item ol, .manual-item ul { margin: 6px 0 0 1.1rem; padding: 0; }
 .manual-item .dica { background: #F7EFE4; border-radius: 10px; padding: 8px 12px; margin-top: 10px; font-size: 14px; }
 @media (max-width: 760px) { .manual-item { grid-template-columns: 1fr; } }
@@ -935,11 +942,28 @@ st.markdown(CSS, unsafe_allow_html=True)
 # ─────────────────────────────────────────────────────────────
 # Componentes de interface
 # ─────────────────────────────────────────────────────────────
-def cabecalho(titulo, subtitulo=""):
-    st.markdown(
-        f"<h1 class='pagina-titulo'>{titulo}</h1><p class='pagina-sub'>{subtitulo}</p>",
-        unsafe_allow_html=True,
-    )
+def cabecalho(titulo, subtitulo="", ajuda=None):
+    """Título da tela. ajuda: nome da tela em manual.AJUDA: mostra o botão "?" com o Zu explicando a tela."""
+    html_titulo = f"<h1 class='pagina-titulo'>{titulo}</h1><p class='pagina-sub'>{subtitulo}</p>"
+    conteudo = manual.ajuda_html(ajuda) if ajuda else ""
+    if not conteudo:
+        st.markdown(html_titulo, unsafe_allow_html=True)
+        return
+    c1, c2 = st.columns([10, 1.4], vertical_alignment="center") if _aceita(st.columns, "vertical_alignment") \
+        else st.columns([10, 1.4])
+    c1.markdown(html_titulo, unsafe_allow_html=True)
+    popover = getattr(st, "popover", None)
+    caixa = (c2.popover("? Ajuda", help="Posso te ajudar? Veja o que esta tela faz e como usar.")
+             if popover else c2.expander("? Ajuda"))
+    with caixa:
+        st.markdown(conteudo, unsafe_allow_html=True)
+
+
+def _aceita(fn, parametro):
+    try:
+        return parametro in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 @contextmanager
@@ -1722,7 +1746,8 @@ def _filtrar_texto(df, busca):
 # Páginas
 # ─────────────────────────────────────────────────────────────
 if menu == "Painel":
-    cabecalho("Painel geral", "Indicadores de todos os demonstrativos já processados na Casa das Máquinas.")
+    cabecalho("Painel geral", "Indicadores de todos os demonstrativos já processados na Casa das Máquinas.",
+              ajuda="Painel")
     ops_disp = motor_historico.operadoras()
     if not ops_disp:
         secao("Base cadastral")
@@ -1857,7 +1882,7 @@ elif menu == "Manual":
 elif menu == "Casa das Máquinas":
     cabecalho("Casa das Máquinas",
               "Envie o demonstrativo do convênio: o sistema entende a estrutura do arquivo, aponta as glosas "
-              "e guarda no histórico.")
+              "e guarda no histórico.", ajuda="Casa das Máquinas")
     c1, c2 = st.columns([2, 1])
     plano = c1.selectbox("Operadora / plano de saúde", PLANOS_SAUDE)
     exibir = c2.selectbox("Exibir", ["Itens com glosa", "Diferenças a conferir", "Todos os itens"])
@@ -2015,22 +2040,41 @@ elif menu == "Casa das Máquinas":
                         st.rerun()
 
         st.markdown("&nbsp;", unsafe_allow_html=True)
-        if exibir == "Itens com glosa":
+        busca = st.text_input("Buscar protocolo, guia ou paciente",
+                              placeholder="Ex.: 340219164411 — procura em todos os atendimentos do arquivo",
+                              key="casa_busca").strip()
+        if busca:
+            # a busca procura em TODOS os atendimentos, qualquer que seja a opção de Exibir
+            colunas_busca = [c for c in ("Protocolo", "Doc Original", "Nome do paciente", "Código", "Procedimento",
+                                         "Motivo da glosa", "Protocolo do recurso") if c in df_proc.columns]
+            achou = df_proc[colunas_busca].astype(str).apply(
+                lambda c: c.str.contains(busca, case=False, na=False, regex=False)).any(axis=1)
+            vis = df_proc[achou]
+            descricao = f"{len(vis)} atendimento(s) com \"{busca}\", entre todos os {len(df_proc)} do arquivo"
+        elif exibir == "Itens com glosa":
             vis = df_proc[(df_proc["Valor da glosa"] > 0.005)
                           | (df_proc["Status da glosa"] == motor_extracao.STATUS_GLOSA_SEM_VALOR)]
+            descricao = f"{len(vis)} item(ns) com glosa de {len(df_proc)} atendimentos"
         elif exibir == "Diferenças a conferir":
             vis = df_proc[pd.to_numeric(df_proc.get("Diferença sem justificativa", 0), errors="coerce").fillna(0) > 0.005]
+            descricao = f"{len(vis)} diferença(s) a conferir de {len(df_proc)} atendimentos"
         else:
             vis = df_proc
+            descricao = f"Todos os {len(df_proc)} atendimentos"
+        if not busca and exibir != "Todos os itens" and len(vis) < len(df_proc):
+            descricao += (f". Os outros {len(df_proc) - len(vis)} não aparecem aqui: escolha **Exibir → Todos os "
+                          "itens** no alto da tela, ou use a busca")
         if vis.empty:
-            st.success("Nenhum item nesta visão.")
+            st.info((f"Nenhum atendimento com \"{busca}\" neste arquivo." if busca else "Nenhum item nesta visão.")
+                    + ("" if busca else f" {descricao}."))
         else:
-            st.caption(f"{len(vis)} de {len(df_proc)} atendimentos")
+            st.caption(descricao + ".")
             tabela(vis)
             baixar(vis, "auditoria_glosas")
 
 elif menu == "Lupa de Glosas":
-    cabecalho("Lupa de glosas", "Pesquise glosas no último demonstrativo processado ou em todo o histórico.")
+    cabecalho("Lupa de glosas", "Pesquise glosas no último demonstrativo processado ou em todo o histórico.",
+              ajuda="Lupa de Glosas")
     opcoes = ["Todo o histórico"] + (["Último demonstrativo processado"] if not df_proc.empty else [])
     l1, l2 = st.columns([1, 2])
     origem = l1.radio("Onde pesquisar", opcoes, key="lupa_origem")
@@ -2072,6 +2116,7 @@ elif menu == "Valores":
     cabecalho(
         "Tabelas de valores",
         "Valores recebidos de cada plano (Rede Nacional e Rede Flex) e repasse ao profissional, com vigência.",
+        ajuda="Valores",
     )
     aba_fat, aba_rep = st.tabs([TIPOS["faturamento"]["titulo"], TIPOS["repasse"]["titulo"]])
     with aba_fat:
@@ -2080,7 +2125,7 @@ elif menu == "Valores":
         secao_valores("repasse")
 
 elif menu == "Cadastros":
-    cabecalho("Cadastros", "Cadastro e gestão dos profissionais da clínica.")
+    cabecalho("Cadastros", "Cadastro e gestão dos profissionais da clínica.", ajuda="Cadastros")
     kpis_cadastro()
     st.markdown("&nbsp;", unsafe_allow_html=True)
 
@@ -2159,7 +2204,8 @@ elif menu == "Cadastros":
                     st.rerun()
 
 elif menu == "Acessos":
-    cabecalho("Segurança e acessos", "Usuários do sistema, registro de acessos e histórico de alterações.")
+    cabecalho("Segurança e acessos", "Usuários do sistema, registro de acessos e histórico de alterações.",
+              ajuda="Acessos")
     if banco.usa_postgres():
         st.success(f"Banco de dados: {banco.descricao()}. Os cadastros ficam guardados mesmo quando o app reinicia.")
     else:

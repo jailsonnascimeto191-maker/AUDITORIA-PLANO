@@ -156,3 +156,120 @@ def render():
         f"<p>{html.escape(s['texto'])}</p><ol>{passos}</ol>{dica}</div></div>",
         unsafe_allow_html=True,
     )
+
+
+# --------------------------------------------------------------------------
+# Ajuda rápida de cada tela (o "?" ao lado do título): o Zu explica o que a tela faz, como faz, onde achar
+# cada coisa e como fazer, em passos curtos.
+# --------------------------------------------------------------------------
+AJUDA = {
+    "Painel": dict(
+        o_que="Mostra o resumo de todos os demonstrativos já conferidos: quanto foi apresentado, quanto foi "
+              "glosado, a glosa por mês, por operadora e os principais motivos.",
+        como="Soma os atendimentos guardados no histórico, pela data do atendimento.",
+        onde=["Período e operadoras: no alto da tela.",
+              "Pagamentos em partes, recursos e duplicidades: no quadro Pagamentos em partes.",
+              "Recursos de glosa e Para verificar: logo abaixo dos gráficos.",
+              "Arquivos já enviados (e remover um): no fim da tela, em Demonstrativos processados."],
+        passos=["Escolha o período e as operadoras.",
+                "Confira o valor glosado e os motivos que mais aparecem.",
+                "Abra Para verificar e confira cada caso apontado.",
+                "Para ver um atendimento específico, use a Lupa de Glosas."],
+    ),
+    "Casa das Máquinas": dict(
+        o_que="Confere um demonstrativo de pagamento do convênio: encontra glosas, pagamentos a menor, "
+              "recursos, pagamentos em partes e duplicidades, e guarda tudo no histórico.",
+        como="Lê o arquivo sozinho (Excel, CSV, PDF, XML TISS, Word ou HTML), compara cada atendimento com a "
+             "tabela de valores do plano e liga os pagamentos que voltam em outro crédito.",
+        onde=["Resultado: na tabela, logo abaixo dos indicadores.",
+              "Exibir: escolha Itens com glosa, Diferenças a conferir ou Todos os itens.",
+              "Buscar: encontra protocolo, guia ou paciente em todos os atendimentos do arquivo.",
+              "Como o arquivo foi lido: em Conferência da leitura."],
+        passos=["Escolha a operadora (ou deixe Identificar pelo arquivo).",
+                "Envie o arquivo e clique em Processar e auditar.",
+                "Use Exibir → Todos os itens para ver também o que foi pago normalmente.",
+                "Procurando um protocolo ou uma guia? Digite em Buscar."],
+    ),
+    "Lupa de Glosas": dict(
+        o_que="Pesquisa qualquer atendimento: no último demonstrativo conferido ou em todo o histórico.",
+        como="Procura o texto digitado em todas as colunas (paciente, guia, protocolo, procedimento, motivo).",
+        onde=["Onde pesquisar: todo o histórico ou o último demonstrativo.",
+              "Só itens com glosa: desmarque para ver também os pagos normalmente."],
+        passos=["Escolha onde pesquisar, o período e as operadoras.",
+                "Digite o que procura (pode ser só um pedaço do número ou do nome).",
+                "Baixe o resultado em CSV, se precisar."],
+    ),
+    "Produção do Profissional": dict(
+        o_que="Monta o espelho da produção do mês de um profissional e calcula o repasse.",
+        como="Cruza o controle de atendimentos da clínica com o demonstrativo do plano, atendimento por "
+             "atendimento, e aplica o valor de repasse cadastrado.",
+        onde=["Valores de repasse: em Valores → Repasse ao profissional.",
+              "Profissionais: em Cadastros."],
+        passos=["Escolha o profissional analisado e o mês de produção.",
+                "Envie o controle de atendimento e, se tiver, o demonstrativo de pagamento.",
+                "Clique em Gerar relatório de produção.",
+                "Confira os atendimentos não localizados e baixe o Excel ou o PDF."],
+    ),
+    "Relatório de Glosas": dict(
+        o_que="Gera a relação de glosas para recorrer: data, paciente, guia, protocolo, motivo e valor, com os "
+              "recursos e os casos para verificar.",
+        como="Usa o último demonstrativo, o histórico ou arquivos enviados aqui. Só entram os itens glosados.",
+        onde=["Abas do Excel: Resumo, Glosas, Recursos de glosa e Para verificar.",
+              "Filtrar: por operadora e pela busca (paciente, guia, motivo)."],
+        passos=["Escolha a origem dos dados e clique em Gerar relatório de glosas.",
+                "Filtre se precisar.",
+                "Baixe o Excel (com todas as abas) ou o PDF."],
+    ),
+    "Faturamento x Recebimento": dict(
+        o_que="Confere se tudo o que a clínica faturou nos lotes foi pago, em que mês e com quantos dias de demora.",
+        como="Liga cada guia do arquivo de faturamento à mesma guia nos demonstrativos de pagamento.",
+        onde=["Campo Faturamento: o arquivo dos lotes/guias que a clínica enviou.",
+              "Campo Demonstrativo(s) de pagamento: o que o convênio pagou."],
+        passos=["Envie o arquivo de faturamento e os demonstrativos, cada um no seu campo.",
+                "Clique em Analisar faturamento x recebimento.",
+                "Veja as guias não pagas e baixe o relatório."],
+    ),
+    "Valores": dict(
+        o_que="Guarda quanto cada plano paga por procedimento (Rede Nacional e Rede Flex) e quanto a clínica "
+              "repassa ao profissional, com vigência.",
+        como="O valor que vale é o da data do atendimento. É com ele que o sistema calcula a glosa.",
+        onde=["Tabela por plano: ver e editar os valores.",
+              "Reajuste: aplicar um percentual a partir de uma data.",
+              "Importar planilha e Sugerir pelos demonstrativos: cadastrar muitos valores de uma vez."],
+        passos=["Cadastre ou importe os valores de cada plano.",
+                "No reajuste, escolha a data e o percentual: o valor antigo termina no dia anterior.",
+                "Depois de mudar valores, envie os demonstrativos de novo para recalcular."],
+    ),
+    "Cadastros": dict(
+        o_que="Cadastra os profissionais da clínica, usados na Produção do Profissional.",
+        como="Cada profissional tem nome, registro e especialidade; pode ser desativado sem perder o histórico.",
+        onde=["Novo profissional: primeira aba.", "Editar ou desativar: Profissionais cadastrados."],
+        passos=["Cadastre nome, registro e especialidade.",
+                "Para alguém que saiu, marque como inativo em vez de excluir."],
+    ),
+    "Acessos": dict(
+        o_que="Cuida de quem usa o sistema: dados da clínica, usuários, registro de acessos, histórico de "
+              "alterações e o que o sistema aprendeu lendo os arquivos.",
+        como="Cada pessoa tem o próprio usuário. Só o administrador vê esta tela.",
+        onde=["Dados da clínica: nome que aparece na entrada e nos relatórios.",
+              "Usuários: criar, desativar, mudar perfil e gerar senha temporária.",
+              "Aprendizado da leitura: padrões de leitura e padrões de lote."],
+        passos=["Crie um usuário para cada pessoa da equipe.",
+                "Quando alguém sair, desative o usuário: o acesso cai na hora.",
+                "Confira de vez em quando o Histórico de alterações."],
+    ),
+}
+
+
+def ajuda_html(tela):
+    """Conteúdo do "?" de uma tela, com o Zu perguntando "Posso te ajudar?"."""
+    a = AJUDA.get(tela)
+    if not a:
+        return ""
+    lista = lambda itens: "".join(f"<li>{html.escape(x)}</li>" for x in itens)
+    return (f"<div class='ajuda-zu'>{marca.mascote_svg(120, 'feliz', 'pergunta')}"
+            f"<div class='ajuda-balao'>Posso te ajudar?</div></div>"
+            f"<div class='ajuda-bloco'><b>O que esta tela faz</b><p>{html.escape(a['o_que'])}</p>"
+            f"<b>Como ela faz</b><p>{html.escape(a['como'])}</p>"
+            f"<b>Onde achar</b><ul>{lista(a['onde'])}</ul>"
+            f"<b>Como fazer</b><ol>{lista(a['passos'])}</ol></div>")

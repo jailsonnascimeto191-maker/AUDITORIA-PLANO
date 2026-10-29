@@ -106,6 +106,11 @@ def _item(item):
         return (f"<g><circle cx='212' cy='130' r='17' fill='{C['destaque']}' stroke='{C['faixa']}' stroke-width='3.5'/>"
                 f"<text x='212' y='137' text-anchor='middle' font-family='Figtree, sans-serif' font-weight='800' "
                 f"font-size='17' fill='#6E4519'>R$</text></g>")
+    if item == "pergunta":  # balão de conversa com "?" saindo da cabeça
+        return (f"<g><path d='M194 8 h40 a6 6 0 0 1 6 6 v26 a6 6 0 0 1 -6 6 h-22 l-12 10 l2 -10 h-8 a6 6 0 0 1 -6 -6 "
+                f"v-26 a6 6 0 0 1 6 -6 z' fill='#FFFFFF' stroke='{C['musgo']}' stroke-width='3' stroke-linejoin='round'/>"
+                f"<text x='214' y='38' text-anchor='middle' font-family='Bricolage Grotesque, Figtree, sans-serif' "
+                f"font-weight='800' font-size='28' fill='{C['musgo']}'>?</text></g>")
     if item == "alerta":
         return (f"<g><path d='M212 22 L236 64 L188 64 Z' fill='{C['destaque']}' stroke='{C['faixa']}' stroke-width='3' stroke-linejoin='round'/>"
                 f"<path d='M212 36 L212 50' stroke='{C['tinta']}' stroke-width='5.5' stroke-linecap='round'/>"
