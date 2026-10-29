@@ -11,6 +11,7 @@ Pagamento em duas partes entre arquivos diferentes: ao guardar um demonstrativo,
 histórico da mesma operadora a outra parte do pagamento (ver motor_extracao.encontrar_pares) e LIGA as duas
 linhas, guardando os valores originais. Remover ou substituir um dos arquivos desfaz o vínculo.
 """
+import logging
 import hashlib
 import json
 import re
@@ -20,9 +21,11 @@ import pandas as pd
 import banco
 import motor_extracao as me
 
-DB = "valores_clinica.db"
+log = logging.getLogger("azus")
+
+DB = "valores_clinica.db"  # mesmo banco das tabelas de valores (no PostgreSQL, tudo fica junto)
 # mude sempre que init_historico() passar a criar uma coluna/índice novo: o app roda a migração de novo
-VERSAO_ESQUEMA = "2026-10-28 duplicado_de"  # mesmo banco das tabelas de valores (no PostgreSQL, tudo fica junto)
+VERSAO_ESQUEMA = "2026-10-28 duplicado_de"
 
 # coluna do DataFrame do motor_extracao -> coluna no banco
 COLUNAS = {
@@ -494,7 +497,8 @@ def _ligar_reapresentacoes(conn, df, operadora, exigir, origem, afetados, so_apr
     try:
         definidos = mk.padroes_definidos(conn).get(me._norm(operadora), {})
         familias, analise, tipos = mp.preparar(df, definidos)
-    except Exception:  # padrões são um extra: nunca impedem o restante
+    except Exception:  # padrões são um extra: nunca impedem o restante (mas o erro fica registrado)
+        log.exception("Falha ao analisar as famílias de protocolo no histórico (%s)", operadora)
         return 0, 0
     if familias:
         try:
@@ -534,9 +538,9 @@ def pagamentos_em_partes(operadoras_sel=None):
         return vazio, vazio, vazio
     itens["Complemento recebido"] = pd.to_numeric(itens.get("Complemento recebido"), errors="coerce").fillna(0.0)
     cols = [c for c in cols if c in itens.columns]
-    vinculados = itens[itens["Status da glosa"].isin([me.STATUS_PAGO_EM_PARTES, "Glosa revertida em recurso",
-                                                      "Recurso pago em parte"])][cols]
-    pend = itens[itens["Status da glosa"] == "Pago a menor sem justificativa"].copy()
+    vinculados = itens[itens["Status da glosa"].isin([me.STATUS_PAGO_EM_PARTES, me.STATUS_RECURSO_PAGO,
+                                                      me.STATUS_RECURSO_PARCIAL])][cols]
+    pend = itens[itens["Status da glosa"] == me.STATUS_PAGO_A_MENOR].copy()
     pend["Falta receber"] = (pend["Diferença sem justificativa"]).round(2)
     pendentes = pend[[c for c in cols if c not in ("Complemento recebido", "Vínculo")] + ["Falta receber"]]
     possiveis = itens[itens["Alertas"].fillna("").str.contains(me.ALERTA_POSSIVEL_PARTES, regex=False)][cols]

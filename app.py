@@ -1,3 +1,4 @@
+import logging
 import html
 import io
 import inspect
@@ -30,6 +31,8 @@ import motor_verificacao  # noqa: E402
 import motor_relatorios  # noqa: E402
 import manual  # noqa: E402
 import paginas_relatorios  # noqa: E402
+
+log = logging.getLogger("azus")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -64,10 +67,8 @@ ESPECIALIDADES = [
     "TERAPIA OCUPACIONAL",
 ]
 
-PLANOS_SAUDE = [
-    "Identificar pelo arquivo", "Unimed Recife", "Bradesco Saúde", "SulAmérica",
-    "Amil", "Cassi", "GEAP", "Postal Saúde", "Assefaz", "Outros",
-]
+# operadoras conhecidas: vêm de motor_extracao (a mesma lista usada para reconhecer o nome do arquivo)
+PLANOS_SAUDE = [motor_extracao.PLANO_AUTOMATICO] + motor_extracao.OPERADORAS + ["Outros"]
 
 # Dois tipos de tabela de valores: o que o plano paga à clínica (faturamento)
 # e o que a clínica repassa ao profissional (repasse).
@@ -807,7 +808,6 @@ if _erro_init:
 # Tema / CSS
 # ─────────────────────────────────────────────────────────────
 # Tema visual: cores e fontes vêm de marca.py
-LOGO_SVG = marca.logo_svg(36)
 _K = marca.C
 CSS = """
 <style>
@@ -960,7 +960,7 @@ def vazio(titulo, texto, expressao="normal", item=None):
 
 
 def secao(titulo):
-    st.markdown(f"<div class='secao-titulo'>{titulo}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='secao-titulo'>{html.escape(str(titulo))}</div>", unsafe_allow_html=True)
 
 
 def tabela(df, **kw):
@@ -1010,6 +1010,7 @@ def recursos_e_verificacao(df, chave):
         anom = motor_verificacao.anomalias(df)
         rec = motor_verificacao.recursos(df)
     except Exception:
+        log.exception("Falha ao montar recursos e casos para verificar")
         st.info("Não foi possível montar a lista de recursos e de casos para verificar agora. "
                 "Atualize a página; se continuar, reinicie o app.")
         return
@@ -1507,7 +1508,7 @@ H = SimpleNamespace(
     cabecalho=cabecalho, secao=secao, tabela=tabela, brl=brl,
     FULL_BTN=FULL_BTN, FULL_DL=FULL_DL, valores_df=valores_df, carregando=carregando, vazio=vazio,
     listar_profissionais=listar_profissionais, PLANOS_SAUDE=PLANOS_SAUDE,
-    registrar_log=registrar_log,
+    registrar_log=registrar_log, clinica=obter_config("nome_clinica") or "",
 )
 
 # ─────────────────────────────────────────────────────────────
@@ -1697,7 +1698,6 @@ if menu in MENUS_ADMIN and not eh_admin:
     st.stop()
 
 df_proc = st.session_state.get("ultimo_processamento", pd.DataFrame())
-paginas_relatorios.mr.CLINICA = obter_config("nome_clinica")
 mostrar_flash()
 
 PERIODOS = {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12, "Todo o histórico": None}
@@ -1735,7 +1735,10 @@ if menu == "Painel":
         f1, f2 = st.columns([1, 2])
         periodo = f1.selectbox("Período (data do atendimento)", list(PERIODOS), index=2, key="painel_periodo")
         ops_sel = f2.multiselect("Operadoras", ops_disp, default=ops_disp, key="painel_ops")
-        itens = motor_historico.carregar_itens(_desde(periodo), ops_sel or None)
+        if not ops_sel:
+            st.info("Escolha pelo menos uma operadora para ver os indicadores.")
+            st.stop()
+        itens = motor_historico.carregar_itens(_desde(periodo), ops_sel)
         r = motor_historico.resumo_painel(itens)
 
         secao("Glosas no período")
@@ -1839,7 +1842,7 @@ if menu == "Painel":
                         motor_conhecimento.reaprender_referencias(
                             op_alvo, motor_historico.carregar_itens(operadoras_sel=[op_alvo]))
                     except Exception:
-                        pass
+                        log.exception("Falha ao reaprender os valores de referência (%s)", op_alvo)
                     # o arquivo removido deixa de ser o "último processado" da Casa das Máquinas e da Lupa
                     if st.session_state.get("ultimo_arquivo") == arq_alvo:
                         for k in ("ultimo_processamento", "ultimo_arquivo", "ultimo_arquivo_dados", "ultima_leitura"):
@@ -1872,13 +1875,19 @@ elif menu == "Casa das Máquinas":
             try:
                 df_res, erro = motor_conhecimento.extrair(_Arq(dados), plano=plano_sel, somente_glosas=False)
             except Exception as e:
+                log.exception("Falha ao ler o arquivo %s", nome_arq)
                 df_res, erro = pd.DataFrame(), f"{type(e).__name__}: {e}"
         if df_res is None or df_res.empty:
             st.error(f"Problema na extração: {erro or 'nenhum registro encontrado.'}")
             return
         operadora = df_res.attrs.get("operadora") or plano_sel
-        if operadora == "INDEFINIDO" and plano_sel != motor_extracao.PLANO_AUTOMATICO:
+        if operadora == motor_extracao.OPERADORA_INDEFINIDA and plano_sel != motor_extracao.PLANO_AUTOMATICO:
             operadora = plano_sel
+        if operadora in (motor_extracao.OPERADORA_INDEFINIDA, motor_extracao.PLANO_AUTOMATICO, "", None):
+            # sem operadora, o arquivo se misturaria com os de outras operadoras no histórico e nos vínculos
+            st.error("Não consegui identificar a operadora pelo nome do arquivo. Escolha a operadora em "
+                     "**Operadora / plano de saúde** e clique em **Processar e auditar** de novo.")
+            return
         df_res["Operadora"] = operadora
         try:
             did, substituiu, ignorados = motor_historico.salvar_demonstrativo(
@@ -1894,6 +1903,7 @@ elif menu == "Casa das Máquinas":
                     aviso += (f" {ignorados} atendimento(s) já estavam no histórico por outro arquivo: ficaram "
                               "guardados sem contar de novo (passam a contar se aquele arquivo for removido).")
         except Exception as e:
+            log.exception("Falha ao guardar %s no histórico", nome_arq)
             aviso = f" Não foi possível guardar no histórico: {e}"
         else:
             # guardar e ligar são passos separados: se só a ligação falhar, o arquivo já está guardado
@@ -1905,6 +1915,7 @@ elif menu == "Casa das Máquinas":
                 if possiveis:
                     aviso += f" {possiveis} caso(s) ficaram para conferir."
             except Exception as e:
+                log.exception("Falha ao ligar %s ao histórico", nome_arq)
                 aviso += (f" Atenção: o arquivo foi guardado, mas não foi possível ligá-lo aos outros arquivos do "
                           f"histórico ({e}). Envie o arquivo de novo para tentar outra vez.")
         registrar_log("Demonstrativo reprocessado" if reprocessando else "Demonstrativo processado",
@@ -2027,7 +2038,10 @@ elif menu == "Lupa de Glosas":
         ops_disp = motor_historico.operadoras()
         ops_sel = l2.multiselect("Operadoras", ops_disp, default=ops_disp, key="lupa_ops")
         periodo = l2.selectbox("Período (data do atendimento)", list(PERIODOS), index=3, key="lupa_periodo")
-        base = motor_historico.carregar_itens(_desde(periodo), ops_sel or None) if ops_disp else pd.DataFrame()
+        if ops_disp and not ops_sel:
+            st.info("Escolha pelo menos uma operadora para pesquisar.")
+            st.stop()
+        base = motor_historico.carregar_itens(_desde(periodo), ops_sel) if ops_disp else pd.DataFrame()
         base = base.drop(columns=["_iso"], errors="ignore")
     else:
         base = df_proc

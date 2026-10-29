@@ -1,6 +1,6 @@
 """
 Motor de relatórios: gera Excel (.xlsx) e PDF a partir de uma "especificação" (spec).
-O nome da clínica (CLINICA) é definido pelo app a partir das configurações; a marca vem de marca.py.
+O nome da clínica vem em spec["clinica"] (o app preenche a partir das configurações); a marca vem de marca.py.
 
 Uso:
     spec = spec_producao(...)  /  spec_glosas(...)  /  spec_faturamento(...)
@@ -15,6 +15,7 @@ A spec é um dicionário simples:
     detalhes:  [dict(nome, titulo, df, moeda=[...], inteiros=[...], datas=[...], total=[...],
                      status="Situação", pdf_colunas=[...], pdf=True), ...]
 """
+import logging
 import io
 import re
 from datetime import datetime
@@ -30,14 +31,15 @@ import marca
 import motor_cruzamento as mc
 import motor_extracao as me
 
+log = logging.getLogger("azus")
+
 # Paleta (a mesma do app, definida em marca.py)
 _h = lambda k: marca.C[k].lstrip("#").upper()
 NAVY, TEAL, TEAL_CLARO, CINZA, LINHA = _h("musgo"), _h("faixa"), "F7EFE4", "F2F4F3", _h("linha")
-CLINICA = ""  # nome da clínica cliente; o app preenche a cada uso
 
 
-def _rodape_texto():
-    partes = [p for p in (CLINICA, f"Gerado pelo {marca.NOME}") if p]
+def _rodape_texto(clinica=""):
+    partes = [p for p in (clinica, f"Gerado pelo {marca.NOME}") if p]
     return "  |  ".join(partes)
 VERDE, AMBAR, VERMELHO = "E6F4EA", "FFF4D6", "FDE7E7"
 FONTE = "Arial"
@@ -76,10 +78,19 @@ def _py(v):
     return v
 
 
+# situações que são boas notícias (verde), mesmo tendo "glosa" no nome
+_STATUS_VERDES = {me.STATUS_SEM_GLOSA, me.STATUS_RECURSO_PAGO, me.STATUS_PAGO_EM_PARTES, me.STATUS_COMPLEMENTO}
+_STATUS_AMBAR = {me.STATUS_RECURSO_PARCIAL, me.STATUS_PAGO_A_MENOR, me.STATUS_DUPLICIDADE, me.STATUS_GLOSA_SEM_VALOR}
+
+
 def _cor_status(txt):
     n = str(txt or "").lower()
     if not n:
         return None
+    if txt in _STATUS_VERDES:
+        return VERDE
+    if txt in _STATUS_AMBAR:
+        return AMBAR
     if "parcial" in n or "com glosa" in n or "diverg" in n or "a menor" in n:
         return AMBAR
     if "glos" in n or "não pago" in n or "nao pago" in n or "não localizado" in n:
@@ -157,7 +168,7 @@ def _titulo_aba(ws, titulo, subtitulo, ncols):
     s.alignment = Alignment(indent=1)
 
 
-def _configurar_impressao(ws, linha_cab=None):
+def _configurar_impressao(ws, linha_cab=None, clinica=""):
     ws.page_setup.orientation = "landscape"
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
@@ -167,7 +178,7 @@ def _configurar_impressao(ws, linha_cab=None):
     ws.page_margins.left = ws.page_margins.right = 0.4
     if linha_cab:
         ws.print_title_rows = f"{linha_cab}:{linha_cab}"
-    ws.oddFooter.center.text = f"{_rodape_texto()}  |  Página &P de &N"
+    ws.oddFooter.center.text = f"{_rodape_texto(clinica)}  |  Página &P de &N"
 
 
 _INICIO_FORMULA = ("=", "+", "@", "\t", "\r")
@@ -264,9 +275,10 @@ def _escrever_tabela(ws, df, linha_ini, d, formatar_status=True, totais=True):
 
 
 def _com_clinica(spec):
-    if not CLINICA or any(r == "Clínica" for r, _ in spec.get("info", [])):
+    clinica = spec.get("clinica") or ""
+    if not clinica or any(r == "Clínica" for r, _ in spec.get("info", [])):
         return spec
-    return {**spec, "info": [("Clínica", CLINICA)] + list(spec.get("info", []))}
+    return {**spec, "info": [("Clínica", clinica)] + list(spec.get("info", []))}
 
 
 def gerar_excel(spec):
@@ -319,7 +331,7 @@ def gerar_excel(spec):
     for j in range(2, maxcols + 1):
         L = get_column_letter(j)
         ws.column_dimensions[L].width = max(ws.column_dimensions[L].width or 0, 18)
-    _configurar_impressao(ws)
+    _configurar_impressao(ws, clinica=spec.get("clinica") or "")
 
     # ---- Abas de detalhe ----
     for d in spec.get("detalhes", []):
@@ -335,7 +347,7 @@ def gerar_excel(spec):
         ult = fim - 1 if d.get("total") else fim
         ws.auto_filter.ref = f"A4:{get_column_letter(df.shape[1])}{ult}"
         ws.freeze_panes = "A5"
-        _configurar_impressao(ws, linha_cab=4)
+        _configurar_impressao(ws, linha_cab=4, clinica=spec.get("clinica") or "")
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -500,7 +512,7 @@ def gerar_pdf(spec):
         canvas.saveState()
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#637083"))
-        canvas.drawString(margem, 7 * mm, f"{_rodape_texto()}  |  {spec['titulo']}  |  Emitido em {_agora()}")
+        canvas.drawString(margem, 7 * mm, f"{_rodape_texto(spec.get('clinica') or '')}  |  {spec['titulo']}  |  Emitido em {_agora()}")
         canvas.drawRightString(pw - margem, 7 * mm, f"Página {doc.page}")
         canvas.setStrokeColor(c_linha)
         canvas.line(margem, 10 * mm, pw - margem, 10 * mm)
@@ -509,7 +521,7 @@ def gerar_pdf(spec):
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=margem, rightMargin=margem,
                             topMargin=margem, bottomMargin=15 * mm, title=spec["titulo"],
-                            author=CLINICA or marca.NOME, creator=marca.NOME)
+                            author=spec.get("clinica") or marca.NOME, creator=marca.NOME)
     doc.build(story, onFirstPage=rodape, onLaterPages=rodape)
     return buf.getvalue()
 
@@ -613,9 +625,11 @@ def spec_glosas(df_glosas, df_completo=None, arquivos=None):
     try:
         rec = mv.recursos(base_rec)
         anom = mv.anomalias(base_rec)
-    except Exception:  # complemento do relatório: nunca impede gerar o principal
+    except Exception as e:  # complemento do relatório: nunca impede gerar o principal, mas avisa
+        log.exception("Falha ao montar as abas de recursos e de casos para verificar")
         rec = pd.DataFrame(columns=mv.COLUNAS_RECURSO)
         anom = pd.DataFrame(columns=mv.COLUNAS_ANOMALIA)
+        info.append(("Atenção", f"Não foi possível montar as abas Recursos de glosa e Para verificar ({e})."))
     if len(rec):
         kpis += [("Glosas recursadas", len(rec), "int"),
                  ("Recebido nos recursos", float(rec["Valor recebido"].sum()), "moeda"),

@@ -17,6 +17,7 @@ Uso:
 """
 import atexit
 import os
+import logging
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -31,7 +32,9 @@ try:
 except Exception:  # sem base de fusos: usa o horário do servidor
     FUSO = None
 
-PASTA = os.path.dirname(os.path.abspath(__file__))
+# Pasta dos bancos SQLite (quando não há DATABASE_URL). AZUS_PASTA_DADOS permite usar outra pasta, por exemplo
+# nos testes automáticos, para não criar arquivos .db junto do código.
+PASTA = os.environ.get("AZUS_PASTA_DADOS") or os.path.dirname(os.path.abspath(__file__))
 
 IntegrityError = (sqlite3.IntegrityError,)
 Error = (sqlite3.Error,)
@@ -212,7 +215,10 @@ def _obter_pool():
 
 
 def _sem_senha(texto, url):
-    """Remove a senha de mensagens de erro antes de mostrá-las na tela."""
+    """Remove a senha de mensagens de erro (formato URL e formato 'password=...')."""
+    for m in re.finditer(r"password\s*=\s*'?([^\s']+)", url or "", re.I):
+        texto = texto.replace(m.group(1), "***")
+    texto = re.sub(r"(password\s*=\s*)'?[^\s']+", r"\1***", texto, flags=re.I)
     m = re.match(r"^[a-z]+://[^:/@]+:([^@]+)@", url or "")
     if m and m.group(1):
         texto = texto.replace(m.group(1), "***")
@@ -247,7 +253,11 @@ def testar_conexao(url=None):
             dica = "o DATABASE_URL está mal formatado."
         else:
             dica = "veja o detalhe abaixo."
-        raise RuntimeError(f"Não consegui conectar ao banco de dados: {dica}\nDetalhe técnico: {bruto}") from None
+        # o detalhe técnico (endereço e usuário do banco) vai só para os logs do servidor, nunca para a tela,
+        # que pode estar sendo vista por alguém que nem entrou no sistema
+        logging.getLogger("azus").error("Falha ao conectar ao banco: %s", bruto)
+        raise RuntimeError(f"Não consegui conectar ao banco de dados: {dica} O detalhe técnico está nos logs do "
+                           "app (Gerenciar aplicativo → Logs).") from None
 
 
 @contextmanager

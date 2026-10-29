@@ -2,9 +2,9 @@ streamlit
 pandas
 numpy
 openpyxl
-XlsxWriter
 PyMuPDF
 reportlab
 python-docx
 xlrd
+lxml
 psycopg[binary,pool]

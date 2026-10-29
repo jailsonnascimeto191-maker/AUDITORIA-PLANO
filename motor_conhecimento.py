@@ -256,8 +256,8 @@ def sugerir_valores(itens, minimo_mes=5):
     cheio = (texto("Motivo da glosa").eq("") & texto("Código da glosa").eq("") & (glosa.fillna(0) <= 0.005)
              & (ql.isna() | qs.isna() | (ql >= qs)) & (pago > 0) & texto("Código").ne("") & texto("Código").ne("-")
              & ~texto("Status da glosa").isin([me.STATUS_PAGO_EM_PARTES, me.STATUS_COMPLEMENTO,
-                                                   me.STATUS_GLOSA_MANTIDA, "Glosa revertida em recurso",
-                                                   "Recurso pago em parte"]))
+                                                   me.STATUS_GLOSA_MANTIDA, me.STATUS_RECURSO_PAGO,
+                                                   me.STATUS_RECURSO_PARCIAL]))
     d = d[cheio].copy()
     if d.empty:
         return pd.DataFrame(columns=cols)

@@ -24,6 +24,7 @@ O "conhecimento" (opcional) traz o que o sistema já aprendeu: perfis de leitura
 usuário, tabela de valores cadastrada, valores de referência por código e significado dos códigos
 de glosa (tabela TUSS 38).
 """
+import logging
 import csv
 import hashlib
 import io
@@ -35,6 +36,8 @@ import xml.etree.ElementTree as ET
 from difflib import SequenceMatcher
 
 import pandas as pd
+
+log = logging.getLogger("azus")
 
 try:
     import fitz  # PyMuPDF
@@ -79,6 +82,7 @@ CAMPOS_LIGACAO = ["Valor informado", "Valor da glosa", "Diferença sem justifica
                   "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"] + COLUNAS_RECURSO
 
 PLANO_AUTOMATICO = "Identificar pelo arquivo"
+OPERADORA_INDEFINIDA = "INDEFINIDO"
 TOL = 0.02
 
 FONTE_ARQUIVO = "Demonstrativo"
@@ -453,13 +457,6 @@ def _score_campo(campo, h_norm, perfil, campos=None):
 # --------------------------------------------------------------------------
 # Estrutura da tabela
 # --------------------------------------------------------------------------
-def _linha_eh_ruido(valores):
-    """Separadores ('-----'), rodapés e linhas sem conteúdo útil."""
-    textos = [t for t in (_txt(v) for v in valores) if t]
-    if not textos:
-        return True
-    return any(re.fullmatch(r"[-=_*.]{5,}.*", t) for t in textos)
-
 
 def _preparar_tabela(raw, campos=None, com_origem=False):
     """Acha o cabeçalho e devolve a tabela com os nomes das colunas.
@@ -884,6 +881,16 @@ def _processar_bruto(raw, perfis=None, nome_tabela=""):
     # coluna de plano/operadora não é paciente
     if "Nome do paciente" in mapa and _norm(mapa["Nome do paciente"]) in _CABECALHOS_NAO_PACIENTE:
         mapa.pop("Nome do paciente")
+    # colunas com o mesmo nome (o leitor chama a segunda de "Nome_2"): a cópia não vira outro campo
+    repetidas = sorted({re.sub(r"_\d+$", "", c) for c in colunas if re.search(r"_\d+$", c)
+                        and re.sub(r"_\d+$", "", c) in colunas})
+    if repetidas:
+        info["observacoes"].append("O arquivo tem colunas com o mesmo nome (" + ", ".join(repetidas)
+                                   + "): confira se a leitura usou a coluna certa.")
+        for campo, c in list(mapa.items()):
+            base = re.sub(r"_\d+$", "", c)
+            if c != base and base in repetidas and any(v == base for k, v in mapa.items() if k != campo):
+                mapa.pop(campo)
     info["mapa"] = dict(mapa)
     if len(mapa) < 2 or not (set(mapa) & set(CAMPOS_DINHEIRO)):
         return vazio, mapa, info
@@ -933,12 +940,21 @@ def especialidade_do_procedimento(descricao):
     return None
 
 
+# palavras que não mudam qual é o plano ("Bradesco" = "Bradesco Saúde" = "Bradesco Saúde S.A.")
+_PALAVRAS_GENERICAS_PLANO = {"SAUDE", "SA", "S", "A", "LTDA", "SEGUROS", "SEGURO", "SEGURADORA", "PLANO", "PLANOS",
+                             "DE", "DA", "DO", "E", "ASSISTENCIA", "MEDICA", "CIA", "COMPANHIA"}
+
+
+def _palavras_plano(nome):
+    return [w for w in re.split(r"[^A-Z0-9]+", _norm(nome)) if w and w not in _PALAVRAS_GENERICAS_PLANO]
+
+
 def _plano_casa(plano_tabela, operadora):
-    a, b = _norm(plano_tabela), _norm(operadora)
-    if not a or not b:
-        return False
-    pa, pb = a.split()[0], b.split()[0]
-    return a == b or a in b or b in a or (len(pa) >= 4 and pa == pb)
+    """O valor cadastrado para 'plano_tabela' vale para a 'operadora' do demonstrativo? Só quando os dois nomes
+    têm as mesmas palavras (sem contar as genéricas como Saúde, S.A., Seguros). "Unimed Recife" não vale para
+    "Unimed Caruaru", nem "Bradesco Saúde" para "Bradesco Dental"."""
+    a, b = _palavras_plano(plano_tabela), _palavras_plano(operadora)
+    return bool(a) and (set(a) == set(b) or "".join(a) == "".join(b))  # "SulAmérica" = "Sul América"
 
 
 def data_iso(v):
@@ -979,12 +995,6 @@ def _linhas_vigencia(df, col_valor, col_flex="valor_flex"):
     flex = pd.to_numeric(df[col_flex], errors="coerce") if col_flex in df.columns else vazio
     return [(a, b, float(v), (float(f) if f is not None and pd.notna(f) and f > 0 else None))
             for a, b, v, f in zip(ini, fim, df[col_valor], flex) if pd.notna(v)]
-
-
-def valor_vigente(linhas, data):
-    """linhas: [(inicio, fim, valor, ...)]. Devolve o valor válido na data, ou None (nenhum ou ambíguo)."""
-    r = valores_vigentes(linhas, data)
-    return r[0] if r else None
 
 
 def valores_vigentes(linhas, data):
@@ -1327,20 +1337,28 @@ def _analisar(d, operadora, conhecimento, sem_aprender=None):
     sem_evid = sem_col & ~com_evid & ~inf_pago_arquivo & informado.notna() & (falta > TOL)
     dif[sem_evid] = falta[sem_evid]
 
+    # diferença de até 2 centavos é arredondamento, não glosa: zera, para "tem glosa" ser igual em todo o sistema
+    glosa = glosa.where(glosa.abs() > TOL, 0.0)
+    dif = dif.where(dif.abs() > TOL, 0.0)
+
     sit, alertas = [], []
     for i in range(len(d)):
         g, p, a = glosa.iat[i], pago.iat[i], []
+        if p < -TOL or (pd.notna(informado.iat[i]) and informado.iat[i] < -TOL):
+            a.append("Valor negativo no arquivo (estorno ou devolução?): conferir")
+        elif fonte[i] == FONTE_ARQUIVO and pd.notna(informado.iat[i]) and p > informado.iat[i] + TOL:
+            a.append("Pago acima do valor apresentado no próprio arquivo: conferir")
         if g > TOL:
-            s = "Glosa total" if p <= TOL else "Glosa parcial"
+            s = STATUS_GLOSA_TOTAL if p <= TOL else STATUS_GLOSA_PARCIAL
         elif (tem_just.iat[i] or qtd_cortada.iat[i]) and pd.isna(informado.iat[i]):
             s = STATUS_GLOSA_SEM_VALOR
             a.append("Sem valor de referência para calcular a glosa: cadastre o valor deste procedimento")
         elif dif.iat[i] > TOL:
-            s = "Pago a menor sem justificativa"
+            s = STATUS_PAGO_A_MENOR
             if informado.iat[i] and informado.iat[i] > 0:
                 a.append(f"Pago {p / informado.iat[i] * 100:.0f}% do valor de referência".replace(".", ","))
         else:
-            s = "Sem glosa"
+            s = STATUS_SEM_GLOSA
         if d["_creditos"].iat[i] > 1:
             if tem_just.iat[i] and g <= TOL:
                 a.append(f"Glosa revertida: pago em {d['_creditos'].iat[i]} créditos")
@@ -1445,7 +1463,8 @@ def encontrar_pares(df, grupo=None, exigir_em=None):
                     continue
                 if exigir_em is not None and grupo is not None and grupo[i] not in exigir_em and grupo[j] not in exigir_em:
                     continue
-                if abs(inf[i] - inf[j]) > TOL or abs(pago[i] + pago[j] - inf[i]) > TOL:
+                # "fecha no centavo": a soma dos dois pagamentos é exatamente o valor (em centavos)
+                if abs(inf[i] - inf[j]) > TOL or round((pago[i] + pago[j]) * 100) != round(inf[i] * 100):
                     continue
                 if str(df.at[i, "Doc Original"]) == str(df.at[j, "Doc Original"]) and str(df.at[i, "Doc Original"]) not in ("", "-"):
                     continue  # mesma guia em créditos diferentes: ver encontrar_mesma_guia
@@ -1455,6 +1474,8 @@ def encontrar_pares(df, grupo=None, exigir_em=None):
         uso[i] = uso.get(i, 0) + 1
         uso[j] = uso.get(j, 0) + 1
     ambiguos = {k for k, n in uso.items() if n > 1}
+    # todas as linhas que poderiam formar par com uma linha ambígua também ficam para conferir (e recebem o aviso)
+    ambiguos |= {k for i, j in pares_validos if i in ambiguos or j in ambiguos for k in (i, j)}
     pares = []
     for i, j in pares_validos:
         if i in ambiguos or j in ambiguos:
@@ -1466,6 +1487,11 @@ def encontrar_pares(df, grupo=None, exigir_em=None):
     return pares, ambiguos
 
 
+# Situações (coluna "Status da glosa"). Compare sempre com estas constantes, nunca com o texto escrito à mão.
+STATUS_SEM_GLOSA = "Sem glosa"
+STATUS_GLOSA_TOTAL = "Glosa total"
+STATUS_GLOSA_PARCIAL = "Glosa parcial"
+STATUS_PAGO_A_MENOR = "Pago a menor sem justificativa"
 STATUS_GLOSA_MANTIDA = "Glosa mantida em novo crédito"
 STATUS_GLOSA_SEM_VALOR = "Glosa (valor não identificado)"
 STATUS_RECURSO_PAGO = "Glosa revertida em recurso"
@@ -1638,7 +1664,7 @@ def aplicar_vinculo_guia(df, a, seguintes, tipo, origem=None, ref=None):
     elif tipo in ("recurso", "partes", "excesso"):
         df.at[a, "Valor da glosa"] = 0.0
         df.at[a, "Diferença sem justificativa"] = 0.0
-        df.at[a, "Status da glosa"] = "Sem glosa" if tipo != "partes" else STATUS_PAGO_EM_PARTES
+        df.at[a, "Status da glosa"] = STATUS_SEM_GLOSA if tipo != "partes" else STATUS_PAGO_EM_PARTES
         if str(df.at[a, "Motivo da glosa"] or "").startswith(_MOTIVOS_GERADOS):
             df.at[a, "Motivo da glosa"] = ""
         nota = ("Glosa revertida: pago depois" if tipo == "recurso" else "Restante pago depois na mesma guia")
@@ -1655,7 +1681,7 @@ def aplicar_vinculo_guia(df, a, seguintes, tipo, origem=None, ref=None):
             df.at[k, "Status da glosa"] = STATUS_DUPLICIDADE if pk > TOL else STATUS_GLOSA_MANTIDA
             df.at[k, "Vínculo"] = f"Mesma guia já paga em {dt_a} ({_br_valor(pa)}){onde(a)}"
     else:  # glosa mantida
-        nota = "Glosa mantida em novo crédito"
+        nota = STATUS_GLOSA_MANTIDA
         df.at[a, "Vínculo"] = f"{nota}: {lista}"
         df.at[a, "Alertas"] = "; ".join(alertas_a + [nota])
         for k, _ in pagos_depois:
@@ -1797,7 +1823,8 @@ def finalizar(linhas, operadora, conhecimento=None):
     try:
         familias, analise, tipos = motor_padroes.preparar(g, definidos)
         reap = motor_padroes.linhas_reapresentacao(g, familias, tipos) if familias else None
-    except Exception:  # padrões são um extra: nunca impedem a leitura
+    except Exception:  # padrões são um extra: nunca impedem a leitura (mas o erro fica registrado)
+        log.exception("Falha ao analisar as famílias de protocolo (%s)", operadora)
         familias, analise, tipos, reap = [], None, {}, None
     out, refs, codigos = _analisar(g, operadora, conhecimento, sem_aprender=reap)
     out, resumo["recursos"] = _recurso_mesma_guia(out)
@@ -1809,17 +1836,6 @@ def finalizar(linhas, operadora, conhecimento=None):
         if c not in out.columns:
             out[c] = ""
     return out[COLUNAS_COMPLETAS].reset_index(drop=True), resumo
-
-
-def mapear_dataframe_para_glosas(df_bruto, somente_glosas=True):
-    if df_bruto is None or df_bruto.empty:
-        return pd.DataFrame(columns=COLUNAS_COMPLETAS)
-    linhas, mapa, _ = _processar_bruto(_com_cabecalho(df_bruto))
-    df, _ = finalizar([linhas] if not linhas.empty else [], "")
-    if somente_glosas:
-        df = df[df["Valor da glosa"] > 0.005].reset_index(drop=True)
-    df.attrs["mapeamento"] = mapa
-    return df
 
 
 # --------------------------------------------------------------------------
@@ -1992,6 +2008,8 @@ _OPERADORAS_POR_NOME = [
     (("POSTAL", "CORREIOS"), "Postal Saúde"),
     (("ASSEFAZ",), "Assefaz"),
 ]
+# lista única das operadoras conhecidas (a tela usa esta mesma lista)
+OPERADORAS = [op for _, op in _OPERADORAS_POR_NOME]
 
 
 def extrair_nome_operadora(nome_arquivo):
@@ -2002,7 +2020,7 @@ def extrair_nome_operadora(nome_arquivo):
         for c in chaves:
             if (" " + c + " ") in n or (len(c) >= 5 and c.replace(" ", "") in compacto):
                 return operadora
-    return "INDEFINIDO"
+    return OPERADORA_INDEFINIDA
 
 
 def _detectar_operadora(plano, nome_arquivo):
@@ -2170,4 +2188,23 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
         return df, None
 
     except Exception as e:
-        return vazio, f"Erro ao processar o arquivo: {type(e).__name__}: {e}"
+        log.exception("Erro ao processar o arquivo %s", getattr(arquivo_upload, "name", ""))
+        return vazio, _mensagem_de_erro(e)
+
+
+def _mensagem_de_erro(e):
+    """Explica em português o que há de errado com o arquivo (em vez da mensagem técnica do Python)."""
+    import zipfile
+    texto = f"{type(e).__name__}: {e}"
+    if isinstance(e, zipfile.BadZipFile) or "zip file" in texto.lower():
+        return ("O arquivo Excel está corrompido ou não é um Excel de verdade (talvez tenha sido renomeado). "
+                "Abra no Excel, salve de novo como .xlsx e envie outra vez.")
+    if isinstance(e, csv.Error) or "new-line character" in texto:
+        return "O arquivo CSV está corrompido ou não é texto. Exporte o CSV de novo a partir do sistema de origem."
+    if isinstance(e, ET.ParseError):
+        return "O XML está mal formado (incompleto ou corrompido). Baixe o arquivo de novo no portal do convênio."
+    if isinstance(e, ImportError):
+        return f"Falta um componente no servidor para ler este tipo de arquivo ({e}). Fale com o suporte."
+    if isinstance(e, UnicodeDecodeError):
+        return "Não consegui ler o texto do arquivo (codificação desconhecida). Salve como UTF-8 e envie de novo."
+    return f"Erro ao processar o arquivo: {texto}"

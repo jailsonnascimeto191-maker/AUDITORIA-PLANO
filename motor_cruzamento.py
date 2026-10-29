@@ -14,6 +14,7 @@ Três usos principais:
 Os demonstrativos devem ser lidos com motor_extracao.extrair_glosas_de_arquivo(..., somente_glosas=False)
 (para ter TODAS as linhas, não só as glosadas) e reunidos com consolidar_demonstrativos().
 """
+import logging
 import csv
 import io
 import re
@@ -22,6 +23,8 @@ from difflib import SequenceMatcher
 import pandas as pd
 
 import motor_extracao as me
+
+log = logging.getLogger("azus")
 
 _norm = me._norm
 _txt = me._txt
@@ -230,6 +233,7 @@ def ler_controle_atendimento(arquivo, plano_padrao=None):
         try:
             tabela = me._preparar_tabela(raw, CAMPOS_CONTROLE)
         except Exception:
+            log.exception("Aba %s do controle ignorada", nome_aba)
             continue
         if tabela.empty or tabela.shape[1] < 2:
             continue
@@ -691,6 +695,17 @@ def producao_por_plano(espelho):
 # --------------------------------------------------------------------------
 # 3) Faturamento (lote) x recebimento
 # --------------------------------------------------------------------------
+_SINAIS_DEMONSTRATIVO = ("VALOR PAGO", "VLR PAGO", "VALOR LIBERADO", "VLR LIBERADO", "GLOSA", "JUSTIFICATIVA",
+                         "LIBERADO PARA CREDITO", "QUANTIDADE LIBERADA")
+
+
+def _parece_demonstrativo(raw, colunas):
+    """A aba é de um demonstrativo de pagamento (o que o convênio pagou), e não do faturamento enviado?"""
+    cab = " | ".join(me._norm(str(c)) for c in colunas)
+    topo = " ".join(me._norm(str(v)) for v in raw.head(15).values.ravel() if v is not None and str(v) != "nan")
+    return any(x in cab for x in _SINAIS_DEMONSTRATIVO) or "LIBERADO PARA CREDITO" in topo
+
+
 def ler_faturamento(arquivo, plano_padrao=None, lote_padrao=None):
     """Lê o arquivo de faturamento (lote com guias). Retorna (DataFrame, erro_ou_None).
 
@@ -701,17 +716,21 @@ def ler_faturamento(arquivo, plano_padrao=None, lote_padrao=None):
     except Exception as e:
         return vazio, str(e)
 
-    partes, cabecalhos, mapa_ref = [], [], {}
+    partes, cabecalhos, mapa_ref, demonstrativos = [], [], {}, []
     for nome_aba, raw in abas:
         try:
             lote_g = me._lote_global(raw)
             envio_g = me._texto_global(raw, r"\b(ENVIO|REMESSA|FATURAMENTO)\b", me._RE_DATA)
             tabela = me._preparar_tabela(raw, CAMPOS_FATURAMENTO)
         except Exception:
+            log.exception("Aba %s do faturamento ignorada", nome_aba)
             continue
         if tabela.empty or tabela.shape[1] < 2:
             continue
         cabecalhos.append([str(c) for c in tabela.columns][:12])
+        if _parece_demonstrativo(raw, tabela.columns):
+            demonstrativos.append(str(nome_aba))
+            continue
         mapa = _mapear(tabela, CAMPOS_FATURAMENTO)
         if "Valor faturado" not in mapa or ("Guia" not in mapa and "Paciente" not in mapa):
             continue
@@ -742,6 +761,10 @@ def ler_faturamento(arquivo, plano_padrao=None, lote_padrao=None):
             partes.append(out)
             mapa_ref = mapa_ref or mapa
 
+    if not partes and demonstrativos:
+        return vazio, ("Este arquivo parece um demonstrativo de pagamento do convênio (tem valor pago, liberado ou "
+                       "glosa), não o faturamento enviado. No campo Faturamento, envie o arquivo dos lotes/guias que "
+                       "a clínica faturou; o demonstrativo vai no outro campo.")
     if not partes:
         dica = f" Cabeçalhos vistos: {cabecalhos[0]}" if cabecalhos else ""
         return vazio, ("Não encontrei, no faturamento, a coluna de valor faturado junto com guia ou paciente."

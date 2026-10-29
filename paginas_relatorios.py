@@ -101,10 +101,13 @@ def _ler_demonstrativos(arquivos, plano, datas):
 
 def _downloads(H, res, base, chave):
     c1, c2 = st.columns(2)
+    # cada download de relatório (com dados de pacientes) fica registrado no histórico de alterações
     c1.download_button("Baixar Excel", res["xlsx"], file_name=f"{base}.xlsx", mime=MIME_XLSX,
-                       key=f"dl_x_{chave}", **H.FULL_DL)
+                       key=f"dl_x_{chave}", on_click=H.registrar_log, args=("Relatório baixado", f"{base}.xlsx"),
+                       **H.FULL_DL)
     c2.download_button("Baixar PDF", res["pdf"], file_name=f"{base}.pdf", mime="application/pdf",
-                       key=f"dl_p_{chave}", **H.FULL_DL)
+                       key=f"dl_p_{chave}", on_click=H.registrar_log, args=("Relatório baixado", f"{base}.pdf"),
+                       **H.FULL_DL)
 
 
 def _vazio(H, titulo, texto, expressao="normal", item=None):
@@ -195,7 +198,7 @@ def render_producao(H):
                                         espelho, resumo, por_plano, so_demo, descontou_glosa=descontar)
                 st.session_state["rel_producao"] = dict(
                     espelho=espelho, resumo=resumo, por_plano=por_plano, so_demo=so_demo,
-                    xlsx=mr.gerar_excel(spec), pdf=mr.gerar_pdf(spec),
+                    xlsx=mr.gerar_excel({**spec, "clinica": H.clinica}), pdf=mr.gerar_pdf({**spec, "clinica": H.clinica}),
                     base=f"producao_{_slug(prof['nome'])}_{ano}-{mes:02d}",
                     avisos=erros_demo
                     + ([f"{sem_data} linha(s) do controle sem data válida ficaram fora da competência."]
@@ -313,7 +316,10 @@ def render_glosas(H):
     sel_ops = f1.multiselect("Filtrar por operadora", ops, default=ops, key="glo_f_ops") if len(ops) > 1 else ops
     busca = f2.text_input("Buscar (paciente, guia, motivo...)", key="glo_busca")
     vis = glosas
-    if ops and sel_ops:
+    if ops and not sel_ops:
+        st.info("Escolha pelo menos uma operadora.")
+        return
+    if ops:
         vis = vis[vis["Operadora"].astype(str).isin(sel_ops)]
     if busca.strip():
         m = vis.astype(str).apply(lambda c: c.str.contains(busca.strip(), case=False, na=False, regex=False)).any(axis=1)
@@ -328,6 +334,7 @@ def render_glosas(H):
     cache = st.session_state.get("rel_glosas")
     if not cache or cache["chave"] != chave:
         with H.carregando("Montando Excel e PDF..."):
+            spec["clinica"] = H.clinica
             cache = dict(chave=chave, xlsx=mr.gerar_excel(spec), pdf=mr.gerar_pdf(spec))
         st.session_state["rel_glosas"] = cache
         _log(H, "Relatório de glosas", f"{len(vis)} itens | {', '.join(base['nomes'])}")
@@ -400,7 +407,7 @@ def render_faturamento(H):
                 res = mc.cruzar_faturamento_recebimento(fat, demo, data_envio_padrao=data_envio)
                 spec = mr.spec_faturamento(res, [a.name for a in arqs_fat], [a.name for a in arqs_demo])
                 st.session_state["rel_faturamento"] = dict(
-                    res=res, spec=spec, xlsx=mr.gerar_excel(spec), pdf=mr.gerar_pdf(spec),
+                    res=res, spec=spec, xlsx=mr.gerar_excel({**spec, "clinica": H.clinica}), pdf=mr.gerar_pdf({**spec, "clinica": H.clinica}),
                     avisos=erros + erros_demo, resumo_arqs=resumo_arqs,
                     base=f"faturamento_x_recebimento_{date.today():%Y-%m-%d}")
             _log(H, "Faturamento x recebimento", f"{len(res)} guias | {len(arqs_fat)} faturamento(s)")

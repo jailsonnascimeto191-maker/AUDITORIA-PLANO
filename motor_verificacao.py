@@ -84,6 +84,21 @@ def recursos(df):
     return out.reset_index(drop=True)
 
 
+_COLUNAS_USADAS = ["Data do evento", "Nome do paciente", "Doc Original", "Código", "Procedimento", "Valor pago",
+                   "Protocolo", "Data de pagamento", "Status da glosa", "Alertas", "Motivo da glosa", "Vínculo",
+                   "Valor informado", "Complemento recebido"]
+
+
+def _com_colunas(d):
+    """Cópia com as colunas que esta análise usa (vazias quando o arquivo não as trouxe)."""
+    faltam = [c for c in _COLUNAS_USADAS if c not in d.columns]
+    if faltam:
+        d = d.copy()
+        for c in faltam:
+            d[c] = ""
+    return d
+
+
 def _linha(df, i, tipo, oque):
     return {"Tipo": tipo, "O que verificar": oque,
             "Data do atendimento": df.at[i, "Data do evento"], "Paciente": df.at[i, "Nome do paciente"],
@@ -98,7 +113,7 @@ def anomalias(df):
     """Casos que pedem verificação humana. Retorna DataFrame (vazio se não houver nada)."""
     if df is None or df.empty:
         return pd.DataFrame(columns=COLUNAS_ANOMALIA)
-    d = df.reset_index(drop=True)
+    d = _com_colunas(df.reset_index(drop=True))
     linhas = []
     status = _texto(d, "Status da glosa")
     alertas = _texto(d, "Alertas")
