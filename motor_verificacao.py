@@ -23,6 +23,35 @@ TIPO_COBRANCA_DOBRO = "Possível cobrança em dobro"
 TIPO_PAGO_REPETIDO = "Pagamento repetido"
 TIPO_ACIMA = "Recebeu mais que o informado"
 TIPO_SEM_ORIGINAL_DEFINIDO = "Recurso com mais de um original possível"
+TIPO_ATRASADO = "Pagamento atrasado"
+TIPO_VERSOES = "Versões diferentes do mesmo demonstrativo"
+TIPO_PAGO_DIFERENTE = "Pago diferente do liberado"
+TIPO_GLOSA_MAIOR = "Glosa maior que o valor"
+TIPO_GUIA_FORA_PADRAO = "Número de guia fora do padrão"
+
+# demonstrativos TISS (análise de conta + pagamento): alerta -> (tipo, o que verificar)
+try:
+    import leitor_tiss as _lt
+    import motor_tiss as _mt
+    _ALERTAS_TISS = [
+        (_mt.ALERTA_ATRASADO, TIPO_ATRASADO,
+         "A guia está na análise de conta, mas não apareceu em nenhum demonstrativo de pagamento dentro do prazo que "
+         "a operadora costuma levar. Confira se o pagamento caiu; se não, cobre a operadora."),
+        (_mt.ALERTA_DIVERGENCIA, TIPO_VERSOES,
+         "Dois arquivos da mesma análise (PDF e XML, ou baixados em datas diferentes) trazem valores ou motivos de "
+         "glosa diferentes. A operadora pode ter refeito a análise: confira no portal qual é a versão atual."),
+        (_mt.ALERTA_PAGO_DIFERENTE, TIPO_PAGO_DIFERENTE,
+         "O demonstrativo de pagamento pagou um valor diferente do liberado na análise de conta desta guia."),
+        (_mt.ALERTA_RECURSO_VARIOS, TIPO_SEM_ORIGINAL_DEFINIDO,
+         "Pagamento de recurso, mas a mesma guia tem glosa em mais de um protocolo. Confira a qual glosa ele se refere."),
+        (_lt.ALERTA_GLOSA_MAIOR, TIPO_GLOSA_MAIOR,
+         "A operadora glosou mais do que o valor processado da guia. Pode ser erro de cálculo: peça a correção."),
+        (_lt.ALERTA_GUIA_FORA_PADRAO, TIPO_GUIA_FORA_PADRAO,
+         "O número da guia tem dígitos a mais que as outras. Confira se foi digitado errado no faturamento: isso "
+         "atrapalha a conferência e o recurso."),
+    ]
+except Exception:  # durante uma atualização, um módulo novo pode ainda não estar carregado
+    _ALERTAS_TISS = []
 
 COLUNAS_ANOMALIA = ["Tipo", "O que verificar", "Data do atendimento", "Paciente", "Guia", "Código", "Procedimento",
                     "Valor pago", "Protocolo", "Data de pagamento", "Operadora", "Arquivo"]
@@ -120,6 +149,9 @@ def anomalias(df):
     pago = _num(d, "Valor pago")
     guia = _texto(d, "Doc Original")
     chave = mp.chave_atendimento(d)
+    # sem o nome do paciente (ex.: XML TISS) não dá para saber se é o mesmo atendimento: cada linha fica sozinha
+    sem_nome = d["Nome do paciente"].map(me._norm).isin(["", "NAO IDENTIFICADO"])
+    chave = chave.where(~sem_nome, pd.Series([f"#linha{i}" for i in d.index], index=d.index))
     # linhas que representam um atendimento pago (não a segunda parte de um pagamento já ligado)
     atendimento_pago = (pago > TOL) & ~status.isin([STATUS_COMPLEMENTO, STATUS_GLOSA_MANTIDA,
                                                        STATUS_DUPLICIDADE])
@@ -164,6 +196,13 @@ def anomalias(df):
         linhas.append(_linha(d, i, TIPO_SEM_ORIGINAL_DEFINIDO,
                              "Pagamento num lote de recurso/complemento, mas há mais de um atendimento original do "
                              "mesmo paciente, procedimento e data. Confira a qual guia ele se refere."))
+
+    # 5) demonstrativos TISS: atraso, versões diferentes, valores incoerentes
+    for alerta, tipo, oque in _ALERTAS_TISS:
+        for i in d.index[alertas.str.contains(alerta, regex=False)]:
+            detalhe = next((x for x in alertas[i].split("; ") if x.startswith(alerta)), "")
+            extra = detalhe[len(alerta):].strip(" :[]()") if detalhe else ""
+            linhas.append(_linha(d, i, tipo, oque + (f" ({extra})" if extra else "")))
 
     out = pd.DataFrame(linhas, columns=COLUNAS_ANOMALIA)
     for c in ("Operadora", "Arquivo"):

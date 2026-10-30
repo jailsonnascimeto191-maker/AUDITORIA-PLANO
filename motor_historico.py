@@ -25,7 +25,7 @@ log = logging.getLogger("azus")
 
 DB = "valores_clinica.db"  # mesmo banco das tabelas de valores (no PostgreSQL, tudo fica junto)
 # mude sempre que init_historico() passar a criar uma coluna/índice novo: o app roda a migração de novo
-VERSAO_ESQUEMA = "2026-10-28 duplicado_de"
+VERSAO_ESQUEMA = "2026-10-30 tiss"
 
 # coluna do DataFrame do motor_extracao -> coluna no banco
 COLUNAS = {
@@ -58,6 +58,10 @@ COLUNAS = {
     "Protocolo do recurso": "recurso_protocolo",
     "Data do recurso": "recurso_data",
     "Recebido no recurso": "recurso_recebido",
+    "Documento": "documento",
+    "Carteira": "carteira",
+    "Data do protocolo": "data_protocolo",
+    "Protocolo original": "protocolo_original",
     "Vínculo": "vinculo",
 }
 NUMERICAS = {"valor_informado", "valor_pago", "valor_glosa", "quantidade", "valor_unitario",
@@ -127,6 +131,17 @@ def chave_atendimento(reg, ocorrencia=0):
     'ocorrencia' separa linhas iguais dentro do mesmo arquivo (ex.: duas sessões no mesmo dia, sem guia)."""
     txt = lambda c: str(reg.get(c) or "").strip().upper()
     guia, codigo = txt("Doc Original"), txt("Código")
+    documento = txt("Documento")
+    if documento and guia and guia != "-" and txt("Protocolo") not in ("", "-"):
+        # TISS: protocolo + guia identificam o atendimento sem o paciente (o XML não traz o nome), então o PDF e o
+        # XML do mesmo lote, ou o mesmo arquivo baixado de novo, são reconhecidos como cópia
+        valor = f"{_num_ou_vazio(reg.get('Valor informado'))}"
+        if documento == "PAGAMENTO":
+            partes = ["TISS-PAG", txt("Protocolo"), guia, txt("Data de pagamento"), valor]
+        else:
+            partes = ["TISS-ANA", txt("Protocolo"), guia, codigo, txt("Data do evento"), valor]
+        base = "|".join(partes) + (f"#{ocorrencia}" if ocorrencia else "")
+        return hashlib.sha1(base.encode()).hexdigest()[:20]
     if guia and guia != "-" and codigo and codigo != "-":
         partes = [guia, codigo, txt("Data do evento"), txt("Nome do paciente"), txt("Data de pagamento")]
     else:
@@ -141,6 +156,14 @@ def chave_atendimento(reg, ocorrencia=0):
                   txt("Procedimento")]
     base = "|".join(partes) + (f"#{ocorrencia}" if ocorrencia else "")
     return hashlib.sha1(base.encode()).hexdigest()[:20]
+
+
+def _num_ou_vazio(v):
+    try:
+        f = float(v)
+        return "" if pd.isna(f) else f"{f:.2f}"
+    except (TypeError, ValueError):
+        return ""
 
 
 def salvar_demonstrativo(df, arquivo, hash_, usuario, operadora):
@@ -169,7 +192,10 @@ def salvar_demonstrativo(df, arquivo, hash_, usuario, operadora):
                 existentes.setdefault(chave, iid)
         repetidos = sum(1 for c in chaves if c and c in existentes)
         # a operadora deste arquivo é religada por vincular_historico(), chamado logo depois de salvar
-        if repetidos == len(registros):  # o arquivo inteiro já está no histórico (ex.: cópia salva de novo)
+        # TISS: a cópia é guardada mesmo repetida (o PDF completa o nome do paciente que o XML não traz, e uma
+        # versão baixada depois pode ter glosas diferentes, que vão para conferir)
+        tiss = "Documento" in df.columns and df["Documento"].fillna("").astype(str).ne("").all()
+        if repetidos == len(registros) and not tiss:  # o arquivo inteiro já está no histórico (ex.: cópia salva de novo)
             for op in ops - {operadora}:
                 _religar(conn, op)
             conn.commit()
@@ -446,13 +472,48 @@ def _guardar_original(df, item):
     return json.dumps({c: _py(df.at[item, c]) for c in CAMPOS_VINCULO}, ensure_ascii=False)
 
 
+def _copias_tiss(conn, operadora):
+    """Itens TISS guardados como cópia de outro (PDF + XML do mesmo lote, arquivo baixado de novo)."""
+    sel = ", ".join(f'i.{db} AS "{df}"' for df, db in COLUNAS.items())
+    return banco.ler_df(
+        conn,
+        f'SELECT {sel}, i.duplicado_de AS "_original", d.arquivo AS "Arquivo" '
+        f"FROM demonstrativo_itens i JOIN demonstrativos d ON d.id = i.demonstrativo_id "
+        f"WHERE i.operadora = ? AND i.duplicado_de IS NOT NULL AND COALESCE(i.documento, '') <> ''",
+        (operadora,),
+    )
+
+
+def _vincular_tiss(conn, df, operadora):
+    """Análise de conta + pagamento + recursos dos demonstrativos TISS (ver motor_tiss)."""
+    import motor_tiss
+    if "Documento" not in df.columns or not df["Documento"].fillna("").astype(str).ne("").any():
+        return 0, 0
+    copias = _copias_tiss(conn, operadora)
+    if not copias.empty:
+        copias["_original"] = pd.to_numeric(copias["_original"], errors="coerce").astype("Int64")
+    mudou, orig, resumo = motor_tiss.ligar(df, copias)
+    for k in mudou:
+        original = {c: _py(v) for c, v in orig[k].items()}
+        _gravar_campos(conn, df, k, ", orig_json = COALESCE(orig_json, ?)",
+                       (json.dumps(original, ensure_ascii=False),))
+    _atualizar_totais(conn, set(df.loc[list(mudou), "_demo"]) if mudou else set())
+    return resumo["confirmados"] + resumo["recursos"], resumo["divergencias"] + resumo["atrasados"]
+
+
 def _vincular(conn, operadora, demonstrativo_id=None):
     df = _itens_operadora(conn, operadora)
     if df.empty:
         return 0, 0
+    n_tiss, conferir_tiss = _vincular_tiss(conn, df, operadora)
+    # o restante (mesma guia, reapresentações, pagamento em partes) deduz pelo paciente + procedimento + data;
+    # os demonstrativos TISS já foram ligados pelo protocolo + guia, que vêm no próprio arquivo
+    df = df[df["Documento"].fillna("").astype(str).eq("")]
+    if df.empty:
+        return n_tiss, conferir_tiss
     if df["_demo"].nunique() < 2:  # um arquivo só: nada para ligar entre arquivos, mas o padrão é aprendido
         _ligar_reapresentacoes(conn, df, operadora, None, lambda k: "", set(), so_aprender=True)
-        return 0, 0
+        return n_tiss, conferir_tiss
     exigir = {int(demonstrativo_id)} if demonstrativo_id is not None else None
     afetados = set()
     origem = lambda k: f"arquivo {df.at[k, 'Arquivo']}"
@@ -486,7 +547,7 @@ def _vincular(conn, operadora, demonstrativo_id=None):
             conn.execute("UPDATE demonstrativo_itens SET alertas = ?, orig_json = COALESCE(orig_json, ?) "
                          "WHERE id = ?", (novo, original, int(k)))
     _atualizar_totais(conn, afetados)
-    return len(pares) + len(mesma) + n_reap, len(ambiguos) + conferir_reap
+    return len(pares) + len(mesma) + n_reap + n_tiss, len(ambiguos) + conferir_reap + conferir_tiss
 
 
 def _ligar_reapresentacoes(conn, df, operadora, exigir, origem, afetados, so_aprender=False):

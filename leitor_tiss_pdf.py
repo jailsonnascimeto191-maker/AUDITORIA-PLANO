@@ -135,8 +135,11 @@ def ler_analise(texto):
 
 
 def ler_pagamento(texto):
-    """Demonstrativo de Pagamento -> DataFrame, uma linha por guia."""
+    """Demonstrativo de Pagamento -> DataFrame, uma linha por guia.
+    'Tipo de pagamento' 2 = pagamento de recurso de glosa; 'Protocolo original' vem das linhas
+    'Ajuste Ant. <protocolo do recurso> - Orig. <protocolo original>' dos débitos/créditos."""
     linhas = _linhas(texto)
+    ajustes = ajustes_de_recurso(texto)
     data_pag = protocolo = lote = data_protocolo = ""
     guias, atual = [], None
     for i, l in enumerate(linhas):
@@ -148,9 +151,11 @@ def ler_pagamento(texto):
                 data_protocolo, protocolo, lote = tok[0], tok[1], tok[2]
         elif re.search(r"44\s*-\s*Número da Guia no Prestador", l):
             tok = _depois(linhas, i).split()
+            tipo = tok[-1] if len(tok) >= 3 and re.fullmatch(r"\d", tok[-1]) else ""
             atual = {"Data do pagamento": data_pag, "Protocolo": protocolo, "Lote": lote,
                      "Data do protocolo": data_protocolo, "Guia do prestador": (tok + [""])[0],
-                     "Guia da operadora": (tok + ["", ""])[1]}
+                     "Guia da operadora": (tok + ["", ""])[1], "Tipo de pagamento": tipo,
+                     "Protocolo original": ajustes.get(protocolo, "")}
         elif re.search(r"48\s*-\s*Valor Processado", l) and atual is not None:
             v = [_num(x) for x in _valores(_depois(linhas, i))]
             if len(v) >= 3:
@@ -160,21 +165,19 @@ def ler_pagamento(texto):
     return pd.DataFrame(guias)
 
 
-def para_planilha(df, tipo):
-    """Converte para as colunas que o leitor do Azus reconhece (como uma planilha de demonstrativo)."""
-    if df is None or df.empty:
-        return pd.DataFrame()
-    if tipo == "analise":
-        return pd.DataFrame({
-            "Data do Atendimento": df["Data do atendimento"], "Nome do Beneficiário": df["Paciente"],
-            "Guia Prestador": df["Guia do prestador"], "Guia Operadora": df["Guia da operadora"],
-            "Protocolo": df["Protocolo"], "Lote": df["Lote"], "Código do Procedimento": df["Código"],
-            "Descrição do Procedimento": df["Descrição"], "Quantidade": df["Quantidade"],
-            "Valor Informado": df["Valor informado"], "Valor Liberado": df["Valor liberado"],
-            "Valor Glosa": df["Valor glosa"], "Código da Glosa": df["Código da glosa"],
-            "Motivo da Glosa": df["Motivo da glosa"]})
-    return pd.DataFrame({
-        "Guia Prestador": df["Guia do prestador"], "Guia Operadora": df["Guia da operadora"],
-        "Protocolo": df["Protocolo"], "Lote": df["Lote"], "Data de Pagamento": df["Data do pagamento"],
-        "Valor Informado": df["Valor processado"], "Valor Liberado": df["Valor liberado"],
-        "Valor Glosa": df["Valor glosa"]})
+_RE_AJUSTE = re.compile(r"Ajuste\s+Ant\.?\s*(\d+)\s*-\s*Orig\.?\s*(\d+)", re.I)
+
+
+def ajustes_de_recurso(texto):
+    """{protocolo do recurso: protocolo original}, das linhas 'Ajuste Ant. X - Orig. Y'."""
+    return {a: o for a, o in _RE_AJUSTE.findall(texto or "")}
+
+
+def nome_operadora(texto):
+    """Nome da operadora no cabeçalho (campo '3 - Nome da Operadora')."""
+    linhas = _linhas(texto)
+    for i, l in enumerate(linhas[:20]):
+        if re.search(r"3\s*-\s*Nome da Operadora", l):
+            v = re.sub(r"^\s*\d+\s+", "", _depois(linhas, i)).strip()
+            return re.split(r"\s{3,}", v)[0]
+    return ""

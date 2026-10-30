@@ -70,6 +70,9 @@ COLUNAS_EXTRAS = ["Quantidade", "Quantidade liberada", "Valor unitário", "Rede"
                   # recurso de glosa: a glosa original e o que voltou depois (em outro crédito/protocolo)
                   "Glosa original", "Data da glosa", "Situação do recurso", "Protocolo do recurso", "Data do recurso",
                   "Recebido no recurso",
+                  # demonstrativos TISS: tipo do documento (análise de conta / pagamento), carteira do paciente,
+                  # data em que o lote foi protocolado e, no pagamento de um recurso, o protocolo da glosa original
+                  "Documento", "Carteira", "Data do protocolo", "Protocolo original",
                   "Vínculo", "Alertas"]
 COLUNAS_COMPLETAS = COLUNAS_PADRAO_GLOSAS + COLUNAS_EXTRAS
 COLUNAS_RECURSO = ["Glosa original", "Data da glosa", "Situação do recurso", "Protocolo do recurso", "Data do recurso",
@@ -79,7 +82,9 @@ RECURSO_PARCIAL = "Recebido em parte"
 RECURSO_NAO_PAGO = "Não pago"
 # campos alterados quando duas aparições do mesmo atendimento são ligadas (guardados para poder desfazer)
 CAMPOS_LIGACAO = ["Valor informado", "Valor da glosa", "Diferença sem justificativa", "Status da glosa",
-                  "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"] + COLUNAS_RECURSO
+                  "Motivo da glosa", "Alertas", "Complemento recebido", "Vínculo"] + COLUNAS_RECURSO + [
+                  # completados pela ligação análise de conta + pagamento (TISS)
+                  "Nome do paciente", "Carteira", "Data de pagamento", "Valor pago"]
 
 PLANO_AUTOMATICO = "Identificar pelo arquivo"
 OPERADORA_INDEFINIDA = "INDEFINIDO"
@@ -1214,6 +1219,7 @@ def _consolidar(d):
         "_status_glosa": lambda s: True if any(v is True for v in s) else (False if any(v is False for v in s) else None),
         "_informado_no_arquivo": "max", "_glosa_no_arquivo": "max", "_tabela": "first",
         "_aviso_leitura": _juntar_texto,
+        "Documento": "first", "Carteira": "first", "Data do protocolo": "first", "Protocolo original": _juntar_texto,
     }
     agg = {k: v for k, v in agg.items() if k in d.columns}
     g = d.groupby("_grupo", sort=False).agg(**{k: (k, v) for k, v in agg.items()})
@@ -1412,7 +1418,7 @@ STATUS_PAGO_EM_PARTES = "Pago em 2 partes"
 STATUS_DUPLICIDADE = "Possível pagamento em duplicidade"
 STATUS_COMPLEMENTO = "Complemento de pagamento"
 ALERTA_POSSIVEL_PARTES = "Possível pagamento em partes com mais de um candidato: conferir"
-_MOTIVOS_GERADOS = ("Glosa Silenciosa", "Quantidade liberada menor")
+_MOTIVOS_GERADOS = ("Glosa Silenciosa", "Quantidade liberada menor", "Motivo não informado no demonstrativo")
 
 
 def _num(v):
@@ -1820,8 +1826,11 @@ def finalizar(linhas, operadora, conhecimento=None):
     resumo["linhas_agrupadas"] = int(len(d) - len(g))
     import motor_padroes  # import aqui: motor_padroes usa este módulo
     definidos = ((conhecimento or {}).get("padroes") or {}).get(_norm(operadora or ""), {})
+    # demonstrativo TISS: protocolo, guia e recurso vêm identificados no próprio arquivo (e o XML não traz o
+    # paciente), então não se deduz nada por paciente + procedimento + data: a ligação é feita no histórico
+    tiss = "Documento" in g.columns and g["Documento"].fillna("").astype(str).ne("").all()
     try:
-        familias, analise, tipos = motor_padroes.preparar(g, definidos)
+        familias, analise, tipos = ([], None, {}) if tiss else motor_padroes.preparar(g, definidos)
         reap = motor_padroes.linhas_reapresentacao(g, familias, tipos) if familias else None
     except Exception:  # padrões são um extra: nunca impedem a leitura (mas o erro fica registrado)
         log.exception("Falha ao analisar as famílias de protocolo (%s)", operadora)
@@ -1830,7 +1839,8 @@ def finalizar(linhas, operadora, conhecimento=None):
     out, resumo["recursos"] = _recurso_mesma_guia(out)
     if familias:
         out, resumo["padroes"] = motor_padroes.ligar_no_arquivo(out, familias, tipos, analise)
-    out, resumo["complementos"] = _juntar_complementos(out)
+    if not tiss:
+        out, resumo["complementos"] = _juntar_complementos(out)
     resumo.update(atendimentos=len(out), referencias=refs, codigos_glosa=codigos)
     for c in COLUNAS_COMPLETAS:
         if c not in out.columns:
@@ -1981,6 +1991,36 @@ def extrair_glosas_xml(arquivo_xml):
     return _processar_bruto(_com_cabecalho(df), nome_tabela="xml")
 
 
+def _ler_tiss(dados, nome):
+    """Demonstrativo no padrão TISS (análise de conta ou pagamento, XML ou PDF): ((linhas, mapa, info), dados do
+    documento), ou None quando o arquivo não é TISS e deve seguir pelo leitor genérico."""
+    import leitor_tiss
+    if nome.endswith(".pdf"):
+        try:
+            if fitz is not None:
+                with fitz.open(stream=dados, filetype="pdf") as doc:
+                    if doc.page_count > LIMITE_PAGINAS_PDF:
+                        return None  # o leitor genérico recusa com a mensagem do limite
+        except Exception:
+            return None
+    r = leitor_tiss.ler(dados, nome)
+    if r is None:
+        return None
+    linhas, doc = r
+    tipo = "análise de conta" if doc["tipo"] == "analise" else "pagamento"
+    obs = [f"Demonstrativo de {tipo} no padrão TISS da ANS ({doc['formato']}), lido pelos campos do padrão."]
+    if doc["tipo"] == "pagamento":
+        obs.append("O demonstrativo de pagamento não traz paciente nem procedimento: eles vêm da análise de conta "
+                   "do mesmo protocolo, ligada pelo número da guia no histórico.")
+    elif doc["formato"] == "XML":
+        obs.append("O XML da análise de conta não traz o nome do paciente: ele vem do PDF da mesma análise ou "
+                   "fica a carteira.")
+    info = dict(tabela=f"TISS {doc['formato']} ({tipo})", colunas=[], assinatura="", mapa={},
+                origem_mapa="padrão TISS", tipo_documento=doc["tipo"], linhas=len(linhas), linhas_guia=0,
+                observacoes=obs)
+    return (linhas, {"origem": "TISS"}, info), doc
+
+
 def _detectar_separador(texto):
     linhas = [l for l in texto.splitlines() if l.strip()][:40]
     melhor, melhor_score = ";", -1.0
@@ -2007,6 +2047,7 @@ _OPERADORAS_POR_NOME = [
     (("GEAP",), "GEAP"),
     (("POSTAL", "CORREIOS"), "Postal Saúde"),
     (("ASSEFAZ",), "Assefaz"),
+    (("CAMED",), "CAMED"),
 ]
 # lista única das operadoras conhecidas (a tela usa esta mesma lista)
 OPERADORAS = [op for _, op in _OPERADORAS_POR_NOME]
@@ -2068,6 +2109,7 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
         if not dados:
             return vazio, "O arquivo está vazio."
         resultados = []  # (linhas, mapa, info)
+        tiss_info, nome_operadora_tiss = None, ""
 
         if nome.endswith((".xlsx", ".xlsm", ".xls")):
             tam = _tamanho_descompactado(dados) if nome.endswith((".xlsx", ".xlsm")) else None
@@ -2108,6 +2150,12 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
         elif nome.endswith((".html", ".htm")):
             for i, t in enumerate(pd.read_html(io.BytesIO(dados))):
                 resultados.append(_processar_bruto(_com_cabecalho(t), perfis, f"tabela {i + 1}"))
+
+        elif nome.endswith((".xml", ".pdf")) and (tiss := _ler_tiss(dados, nome)) is not None:
+            linhas_tiss, tiss_info = tiss
+            resultados.append(linhas_tiss)
+            if not linhas_tiss[0].empty and tiss_info.get("operadora"):
+                nome_operadora_tiss = tiss_info["operadora"]
 
         elif nome.endswith(".xml"):
             resultados.append(extrair_glosas_xml(io.BytesIO(dados)))
@@ -2162,6 +2210,8 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
             return vazio, "Nenhuma glosa ou estrutura de valores encontrada."
 
         operadora = _detectar_operadora(plano, nome_original)
+        if operadora == OPERADORA_INDEFINIDA and nome_operadora_tiss:
+            operadora = extrair_nome_operadora(nome_operadora_tiss)  # nome da operadora dentro do arquivo TISS
         if data_pagamento_padrao is not None and str(data_pagamento_padrao).strip():
             padrao = padronizar_data(data_pagamento_padrao)
             if padrao != "-":
@@ -2181,6 +2231,7 @@ def extrair_glosas_de_arquivo(arquivo_upload, plano=PLANO_AUTOMATICO, somente_gl
         df.attrs["resumo"] = {k: v for k, v in resumo.items() if k not in ("referencias", "codigos_glosa")}
         df.attrs["referencias_aprendidas"] = resumo["referencias"]
         df.attrs["codigos_glosa_aprendidos"] = resumo["codigos_glosa"]
+        df.attrs["tiss"] = tiss_info
 
         if df.empty:
             return df, (f"Arquivo lido ({total_atend} atendimentos), mas nenhuma glosa maior que zero foi "

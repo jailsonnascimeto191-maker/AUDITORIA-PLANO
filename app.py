@@ -1887,32 +1887,29 @@ elif menu == "Casa das Máquinas":
     plano = c1.selectbox("Operadora / plano de saúde", PLANOS_SAUDE)
     exibir = c2.selectbox("Exibir", ["Itens com glosa", "Diferenças a conferir", "Todos os itens"])
 
-    arquivo = st.file_uploader(
-        "Demonstrativo do convênio", type=paginas_relatorios.TIPOS_DEMONSTRATIVO
-    )
+    arquivos = st.file_uploader(
+        "Demonstrativo do convênio (pode enviar vários de uma vez: análises de conta, pagamentos, PDF e XML)",
+        type=paginas_relatorios.TIPOS_DEMONSTRATIVO, accept_multiple_files=True,
+    ) or []
 
-    def _processar(nome_arq, dados, plano_sel, reprocessando=False):
+    def _ler_e_guardar(nome_arq, dados, plano_sel):
+        """Lê o arquivo e guarda no histórico (sem ligar). Retorna (df, operadora, aviso, erro)."""
         class _Arq(io.BytesIO):
             name = nome_arq
-        with carregando("Conferindo o demonstrativo...",
-                        f"{marca.MASCOTE} está lendo a estrutura do arquivo e conferindo guia por guia. "
-                        "Arquivos grandes levam até um minuto."):
-            try:
-                df_res, erro = motor_conhecimento.extrair(_Arq(dados), plano=plano_sel, somente_glosas=False)
-            except Exception as e:
-                log.exception("Falha ao ler o arquivo %s", nome_arq)
-                df_res, erro = pd.DataFrame(), f"{type(e).__name__}: {e}"
+        try:
+            df_res, erro = motor_conhecimento.extrair(_Arq(dados), plano=plano_sel, somente_glosas=False)
+        except Exception as e:
+            log.exception("Falha ao ler o arquivo %s", nome_arq)
+            df_res, erro = pd.DataFrame(), f"{type(e).__name__}: {e}"
         if df_res is None or df_res.empty:
-            st.error(f"Problema na extração: {erro or 'nenhum registro encontrado.'}")
-            return
+            return None, None, "", f"Problema na extração: {erro or 'nenhum registro encontrado.'}"
         operadora = df_res.attrs.get("operadora") or plano_sel
         if operadora == motor_extracao.OPERADORA_INDEFINIDA and plano_sel != motor_extracao.PLANO_AUTOMATICO:
             operadora = plano_sel
         if operadora in (motor_extracao.OPERADORA_INDEFINIDA, motor_extracao.PLANO_AUTOMATICO, "", None):
             # sem operadora, o arquivo se misturaria com os de outras operadoras no histórico e nos vínculos
-            st.error("Não consegui identificar a operadora pelo nome do arquivo. Escolha a operadora em "
-                     "**Operadora / plano de saúde** e clique em **Processar e auditar** de novo.")
-            return
+            return None, None, "", ("Não consegui identificar a operadora pelo arquivo. Escolha a operadora em "
+                                    "**Operadora / plano de saúde** e processe de novo.")
         df_res["Operadora"] = operadora
         try:
             did, substituiu, ignorados = motor_historico.salvar_demonstrativo(
@@ -1929,35 +1926,85 @@ elif menu == "Casa das Máquinas":
                               "guardados sem contar de novo (passam a contar se aquele arquivo for removido).")
         except Exception as e:
             log.exception("Falha ao guardar %s no histórico", nome_arq)
-            aviso = f" Não foi possível guardar no histórico: {e}"
-        else:
+            return df_res, operadora, f" Não foi possível guardar no histórico: {e}", None
+        return df_res, operadora, aviso, None
+
+    def _ligar(operadoras_lig):
+        """Liga os arquivos guardados ao restante do histórico de cada operadora. Retorna o aviso."""
+        aviso, ligados, possiveis = "", 0, 0
+        for op in operadoras_lig:
             # guardar e ligar são passos separados: se só a ligação falhar, o arquivo já está guardado
             try:
-                ligados, possiveis = motor_historico.vincular_historico(operadora)
-                if ligados:
-                    aviso += (f" {ligados} atendimento(s) foram ligados a pagamentos de outros arquivos do histórico "
-                              "(complementos, recursos e pagamentos repetidos; veja no Painel → Pagamentos em partes).")
-                if possiveis:
-                    aviso += f" {possiveis} caso(s) ficaram para conferir."
+                n, p = motor_historico.vincular_historico(op)
+                ligados, possiveis = ligados + n, possiveis + p
             except Exception as e:
-                log.exception("Falha ao ligar %s ao histórico", nome_arq)
+                log.exception("Falha ao ligar os arquivos de %s ao histórico", op)
                 aviso += (f" Atenção: o arquivo foi guardado, mas não foi possível ligá-lo aos outros arquivos do "
                           f"histórico ({e}). Envie o arquivo de novo para tentar outra vez.")
-        registrar_log("Demonstrativo reprocessado" if reprocessando else "Demonstrativo processado",
-                      f"{nome_arq} | {operadora} | {len(df_res)} atendimentos")
+        if ligados:
+            aviso += (f" {ligados} atendimento(s) ou guia(s) foram ligados a outros arquivos do histórico "
+                      "(pagamentos conferidos com a análise de conta, recursos, complementos e pagamentos repetidos).")
+        if possiveis:
+            aviso += f" {possiveis} caso(s) ficaram para conferir (veja em Para verificar)."
+        return aviso
+
+    def _guardar_sessao(df_res, nome_arq, dados_arq, operadora):
         st.session_state["ultimo_processamento"] = df_res
         st.session_state["ultimo_arquivo"] = nome_arq
-        st.session_state["ultimo_arquivo_dados"] = (nome_arq, dados, plano_sel)
+        st.session_state["ultimo_arquivo_dados"] = dados_arq
         st.session_state["ultima_leitura"] = dict(leituras=df_res.attrs.get("leituras", []),
                                                   resumo=df_res.attrs.get("resumo", {}), operadora=operadora)
+
+    def _processar(nome_arq, dados, plano_sel, reprocessando=False):
+        with carregando("Conferindo o demonstrativo...",
+                        f"{marca.MASCOTE} está lendo a estrutura do arquivo e conferindo guia por guia. "
+                        "Arquivos grandes levam até um minuto."):
+            df_res, operadora, aviso, erro = _ler_e_guardar(nome_arq, dados, plano_sel)
+            if erro:
+                st.error(erro)
+                return
+            aviso += _ligar([operadora])
+        registrar_log("Demonstrativo reprocessado" if reprocessando else "Demonstrativo processado",
+                      f"{nome_arq} | {operadora} | {len(df_res)} atendimentos")
+        _guardar_sessao(df_res, nome_arq, (nome_arq, dados, plano_sel), operadora)
         avisar("success", f"Processamento concluído: {len(df_res)} atendimentos.{aviso}")
         st.rerun()
 
+    def _processar_varios(lista, plano_sel):
+        ok, erros, ops, dfs = [], [], [], []
+        with carregando(f"Conferindo {len(lista)} demonstrativos...",
+                        f"{marca.MASCOTE} está lendo arquivo por arquivo e depois liga tudo no histórico "
+                        "(análise de conta com pagamento, recursos). Muitos arquivos levam alguns minutos."):
+            barra = st.progress(0.0)
+            for n, arq in enumerate(lista, start=1):
+                df_res, operadora, aviso, erro = _ler_e_guardar(arq.name, arq.getvalue(), plano_sel)
+                if erro:
+                    erros.append(f"{arq.name}: {erro}")
+                else:
+                    ok.append(arq.name)
+                    dfs.append(df_res.assign(Arquivo=arq.name))
+                    if operadora not in ops:
+                        ops.append(operadora)
+                    registrar_log("Demonstrativo processado", f"{arq.name} | {operadora} | {len(df_res)} atendimentos")
+                barra.progress(n / len(lista), text=f"{n} de {len(lista)}: {arq.name}")
+            aviso = _ligar(ops) if ops else ""
+        if dfs:
+            todos = pd.concat(dfs, ignore_index=True)
+            todos.attrs = dict(dfs[-1].attrs)
+            _guardar_sessao(todos, f"{len(ok)} arquivos", None, ", ".join(ops))
+        msg = f"{len(ok)} de {len(lista)} arquivo(s) processados e guardados no histórico.{aviso}"
+        if erros:
+            msg += " Não foi possível ler: " + " | ".join(erros[:10]) + (" ..." if len(erros) > 10 else "")
+        avisar("success" if ok and not erros else "warning", msg)
+        st.rerun()
+
     if st.button("Processar e auditar", type="primary", **FULL_BTN):
-        if arquivo is None:
+        if not arquivos:
             st.warning("Selecione um arquivo antes de processar.")
+        elif len(arquivos) == 1:
+            _processar(arquivos[0].name, arquivos[0].getvalue(), plano)
         else:
-            _processar(arquivo.name, arquivo.getvalue(), plano)
+            _processar_varios(arquivos, plano)
 
     if not df_proc.empty:
         secao(f"Resultado: {st.session_state.get('ultimo_arquivo', 'último demonstrativo')}")

@@ -8,3 +8,4 @@ python-docx
 xlrd
 lxml
 psycopg[binary,pool]
+pdfplumber

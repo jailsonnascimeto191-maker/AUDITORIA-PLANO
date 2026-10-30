@@ -24,10 +24,24 @@ SECOES = [
         texto="Envie o demonstrativo ou extrato de pagamento do convênio. O sistema entende a estrutura do arquivo "
               "sozinho, mesmo com colunas fora do padrão, várias abas ou blocos por data de crédito.",
         passos=["Escolha a operadora (ou deixe Identificar pelo arquivo).",
-                "Envie o arquivo: Excel, CSV, PDF, XML TISS, Word ou HTML.",
+                "Envie o arquivo: Excel, CSV, PDF, XML TISS, Word ou HTML. Pode enviar vários de uma vez.",
                 "Clique em Processar e auditar e aguarde o tatu terminar de rolar.",
                 "Use Exibir para ver só os itens com glosa, as diferenças a conferir ou todos os atendimentos."],
         dica="Enviar o mesmo arquivo de novo substitui a versão anterior no histórico. Nada é contado em dobro.",
+    ),
+    dict(
+        titulo="Convênios no padrão TISS (análise de conta + pagamento)", onde="Casa das Máquinas",
+        pose=("atenta", "lupa"),
+        texto="Alguns convênios (como a CAMED) mandam dois documentos: a análise de conta de cada lote, com paciente, "
+              "procedimento e glosa, e o demonstrativo de pagamento, só com as guias e o valor pago. Envie os dois, "
+              "em PDF ou XML: o sistema liga um ao outro pelo protocolo e pela guia.",
+        passos=["Baixe no portal do convênio as análises de conta e os demonstrativos de pagamento.",
+                "Envie todos de uma vez na Casa das Máquinas, na ordem que quiser.",
+                "Cada guia da análise ganha a data em que foi paga; o pagamento não conta o atendimento duas vezes.",
+                "Pagamento de recurso de glosa é reconhecido sozinho e volta para a glosa original (Recursos de glosa).",
+                "Guia sem pagamento depois do prazo que o convênio costuma levar aparece em Para verificar."],
+        dica="O XML não traz o nome do paciente. Enviando também o PDF da mesma análise, o nome é completado e os "
+             "dois são conferidos um com o outro.",
     ),
     dict(
         titulo="Corrigir a leitura de um arquivo", onde="Casa das Máquinas → Conferência da leitura",
@@ -186,7 +200,7 @@ AJUDA = {
               "Buscar: encontra protocolo, guia ou paciente em todos os atendimentos do arquivo.",
               "Como o arquivo foi lido: em Conferência da leitura."],
         passos=["Escolha a operadora (ou deixe Identificar pelo arquivo).",
-                "Envie o arquivo e clique em Processar e auditar.",
+                "Envie o arquivo (ou vários de uma vez) e clique em Processar e auditar.",
                 "Use Exibir → Todos os itens para ver também o que foi pago normalmente.",
                 "Procurando um protocolo ou uma guia? Digite em Buscar."],
     ),
